@@ -1,7 +1,5 @@
 """Core components for simsched engine."""
 
-import contextlib
-import random
 from collections.abc import Callable, Generator
 from enum import Enum, auto
 from typing import TypeAlias
@@ -60,72 +58,3 @@ def schedule() -> SimThread:
     Useful for simulating interleaving code paths.
     """
     yield from cond_schedule(lambda: True)
-
-
-TRACE = []
-
-
-def thrd1() -> SimThread:
-    yield from schedule()
-    TRACE.append("T1 1")
-    yield from schedule()
-    TRACE.append("T1 2")
-
-
-def thrd2() -> SimThread:
-    yield from schedule()
-    TRACE.append("T2 1")
-    yield from schedule()
-    TRACE.append("T2 2")
-    while True:
-        yield ThreadState.BLOCK
-
-
-def poll(threads: list[SimThread]) -> tuple[list[SimThread], list[SimThread]]:
-    """Poll active threads.
-
-    Filters out thread that are already finished. The rest are polled and
-    classified and the result is returned - the first tuple item is runnable
-    threads, and the second one is all the unfinished threads.
-    """
-    runnables = []
-    available = []
-
-    for t in threads:
-        with contextlib.suppress(StopIteration):
-            match t.send(SchedulerMessage.POLL):
-                case ThreadState.READY:
-                    runnables.append(t)
-
-            # if not raised StopIteration, then the thread is not finished
-            available.append(t)
-
-    return runnables, available
-
-
-def test_core():
-    t1 = thrd1()
-    t2 = thrd2()
-    assert isinstance(t1, Generator)
-    assert isinstance(t2, Generator)
-
-    threads = [t1, t2]
-
-    # spawn all the generators
-    for t in threads:
-        next(t)
-
-    while True:
-        runnables, available = poll(threads)
-        if not runnables:
-            if not available:
-                print("done - all threads are finished")
-            else:
-                print("failed - deadlock detected")
-            break
-
-        t = random.choice(runnables)
-        with contextlib.suppress(StopIteration):
-            t.send(SchedulerMessage.CONT)
-
-    print(TRACE)
