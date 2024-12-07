@@ -3,12 +3,33 @@
 import contextlib
 import random
 from collections.abc import Callable, Generator
+from enum import Enum, auto
 from typing import TypeAlias
 
 
-TRACE = []
+class ThreadState(Enum):
+    """The thread's state of execution.
 
-SimThread: TypeAlias = Generator[str, str, None]
+    Events of this type are sent from threads to the simulation engine.
+    """
+
+    YIELD = auto()
+    READY = auto()
+    BLOCK = auto()
+
+
+class SchedulerMessage(Enum):
+    """Some command from the engine.
+
+    Events of this type are messages from the simulation engine for threads.
+    """
+
+    POLL = auto()
+    CONT = auto()
+
+
+# some type definitions
+SimThread: TypeAlias = Generator[ThreadState, SchedulerMessage, None]
 Predicate: TypeAlias = Callable[[], bool]
 
 
@@ -16,19 +37,21 @@ def cond_schedule(is_runnable: Predicate) -> SimThread:
     """Schedule the thread with wakeup condition.
 
     This is the main scheduling primitive. It returns control to the scheduler
-    engine and waits for its commands. When polled, returns the predicate
-    result. When got :continue: command, then returns control to the caller
+    engine and waits for its commands. When `poll`ed, returns the predicate
+    result. When got `continue` command, then returns control to the caller
     simthread.
     """
-    cmd = yield "seqpoint"
+    cmd = yield ThreadState.YIELD
     while True:
         match cmd:
-            case "poll":
-                cmd = yield "ready" if is_runnable() else "blocked"
-            case "continue":
+            case SchedulerMessage.POLL:
+                if is_runnable():
+                    cmd = yield ThreadState.READY
+                else:
+                    cmd = yield ThreadState.BLOCK
+                continue
+            case SchedulerMessage.CONT:
                 break
-            case _:
-                raise AssertionError(f"unknown schedule command {cmd}")
 
 
 def schedule() -> SimThread:
@@ -37,6 +60,9 @@ def schedule() -> SimThread:
     Useful for simulating interleaving code paths.
     """
     yield from cond_schedule(lambda: True)
+
+
+TRACE = []
 
 
 def thrd1() -> SimThread:
@@ -52,7 +78,7 @@ def thrd2() -> SimThread:
     yield from schedule()
     TRACE.append("T2 2")
     while True:
-        yield "blocked"
+        yield ThreadState.BLOCK
 
 
 def poll(threads: list[SimThread]) -> tuple[list[SimThread], list[SimThread]]:
@@ -67,8 +93,8 @@ def poll(threads: list[SimThread]) -> tuple[list[SimThread], list[SimThread]]:
 
     for t in threads:
         with contextlib.suppress(StopIteration):
-            match t.send("poll"):
-                case "ready":
+            match t.send(SchedulerMessage.POLL):
+                case ThreadState.READY:
                     runnables.append(t)
 
             # if not raised StopIteration, then the thread is not finished
@@ -100,6 +126,6 @@ def test_core():
 
         t = random.choice(runnables)
         with contextlib.suppress(StopIteration):
-            t.send("continue")
+            t.send(SchedulerMessage.CONT)
 
     print(TRACE)
