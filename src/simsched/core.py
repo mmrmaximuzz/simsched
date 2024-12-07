@@ -2,26 +2,41 @@
 
 import contextlib
 import random
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from typing import TypeAlias
 
 
 TRACE = []
 
 SimThread: TypeAlias = Generator[str, str, None]
+Predicate: TypeAlias = Callable[[], bool]
 
 
-def schedule() -> SimThread:
+def cond_schedule(is_runnable: Predicate) -> SimThread:
+    """Schedule the thread with wakeup condition.
+
+    This is the main scheduling primitive. It returns control to the scheduler
+    engine and waits for its commands. When polled, returns the predicate
+    result. When got :continue: command, then returns control to the caller
+    simthread.
+    """
     cmd = yield "seqpoint"
     while True:
         match cmd:
             case "poll":
-                cmd = yield "ready"  # always ready to continue
-                continue
+                cmd = yield "ready" if is_runnable() else "blocked"
             case "continue":
                 break
             case _:
                 raise AssertionError(f"unknown schedule command {cmd}")
+
+
+def schedule() -> SimThread:
+    """Simply yield the current thread execution to the engine.
+
+    Useful for simulating interleaving code paths.
+    """
+    yield from cond_schedule(lambda: True)
 
 
 def thrd1() -> SimThread:
