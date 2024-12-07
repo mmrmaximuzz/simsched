@@ -36,10 +36,19 @@ def thrd2() -> SimThread:
     TRACE.append("T2 1")
     yield from schedule()
     TRACE.append("T2 2")
+    while True:
+        yield "blocked"
 
 
-def poll(threads: list[SimThread]) -> list[SimThread]:
+def poll(threads: list[SimThread]) -> tuple[list[SimThread], list[SimThread]]:
+    """Poll active threads.
+
+    Filters out thread that are already finished. The rest are polled and
+    classified and the result is returned - the first tuple item is runnable
+    threads, and the second one is all the unfinished threads.
+    """
     runnables = []
+    available = []
 
     for t in threads:
         with contextlib.suppress(StopIteration):
@@ -47,7 +56,10 @@ def poll(threads: list[SimThread]) -> list[SimThread]:
                 case "ready":
                     runnables.append(t)
 
-    return runnables
+            # if not raised StopIteration, then the thread is not finished
+            available.append(t)
+
+    return runnables, available
 
 
 def test_core():
@@ -63,9 +75,12 @@ def test_core():
         next(t)
 
     while True:
-        runnables = poll(threads)
+        runnables, available = poll(threads)
         if not runnables:
-            print("done - no runnable threads available")
+            if not available:
+                print("done - all threads are finished")
+            else:
+                print("failed - deadlock detected")
             break
 
         t = random.choice(runnables)
