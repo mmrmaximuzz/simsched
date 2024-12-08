@@ -74,7 +74,7 @@ def spawn_coroutines(ts: Iterable[SimThreadConstructor]) -> list[SimThread]:
     return threads
 
 
-def run(coros: Iterable[SimThreadConstructor]):
+def run(coros: Iterable[SimThreadConstructor]) -> bool:
     """Run the simulation engine till the end of execution.
 
     This is the main function of the simthread tool. It spawns all the
@@ -87,10 +87,11 @@ def run(coros: Iterable[SimThreadConstructor]):
         runnables, available = poll(threads)
         if not runnables:
             if not available:
-                print("done - all threads are finished")
+                # no runnables and all finished - OK
+                return True
             else:
-                print("failed - deadlock detected")
-            break
+                # no runnables but some are not finished - DEADLOCK
+                return False
 
         # pick up the random thread and advance it
         thrd = random.choice(runnables)
@@ -98,21 +99,3 @@ def run(coros: Iterable[SimThreadConstructor]):
 
         # put some asserts to catch errors early
         assert state == ThreadState.YIELD, state
-
-
-def test_core():
-    trace = []
-
-    def thrd1() -> SimThread:
-        trace.append("A")
-        yield from schedule()
-        trace.append("B")
-
-    def thrd2() -> SimThread:
-        trace.append("X")
-        yield from schedule()
-        trace.append("Y")
-
-    run((thrd1, thrd2))
-
-    print(trace)
