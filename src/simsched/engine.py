@@ -5,7 +5,7 @@ import random
 from collections.abc import Callable, Iterable
 from typing import TypeAlias
 
-from .core import SimThread, ThreadState, SchedulerMessage, schedule
+from .core import SchedulerMessage, SimThread, ThreadState, schedule
 
 SimThreadConstructor: TypeAlias = Callable[[], SimThread]
 
