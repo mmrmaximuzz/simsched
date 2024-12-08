@@ -14,6 +14,7 @@ class ThreadState(Enum):
     YIELD = auto()
     READY = auto()
     BLOCK = auto()
+    FINAL = auto()
 
 
 class SchedulerMessage(Enum):
@@ -58,3 +59,19 @@ def schedule() -> SimThread:
     Useful for simulating interleaving code paths.
     """
     yield from cond_schedule(lambda: True)
+
+
+def finish() -> SimThread:
+    """Finish the current simulation thread.
+
+    The scheduler will interpret this thread as finished on next poll cycle. It
+    is used to avoid diddling with StopIteration, but it is also useful to
+    completely stop the thread from some deeply-nested coroutine without
+    passing dozens of return codes throughout.
+    """
+    cmd = yield ThreadState.YIELD
+    while True:
+        if cmd != SchedulerMessage.POLL:
+            raise AssertionError(f"bad command for finished thread: {cmd}")
+
+        cmd = yield ThreadState.FINAL

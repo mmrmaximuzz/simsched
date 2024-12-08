@@ -1,11 +1,10 @@
 """Engine module for simsched tool."""
 
-import contextlib
 import random
 from collections.abc import Callable, Iterable
 from typing import TypeAlias
 
-from .core import SchedulerMessage, SimThread, ThreadState, schedule
+from .core import SchedulerMessage, SimThread, ThreadState, finish, schedule
 
 SimThreadConstructor: TypeAlias = Callable[[], SimThread]
 
@@ -17,20 +16,46 @@ def poll(threads: list[SimThread]) -> tuple[list[SimThread], list[SimThread]]:
     classified and the result is returned - the first tuple item is runnable
     threads, and the second one is all the unfinished threads.
     """
+    ready = []
+    total = []
 
-    runnables = []
-    available = []
+    for thrd in threads:
+        match thrd.send(SchedulerMessage.POLL):
+            case ThreadState.FINAL:
+                # stop accounting threads which reported it is finished
+                continue
+            case ThreadState.READY:
+                ready.append(thrd)
 
-    for t in threads:
-        with contextlib.suppress(StopIteration):
-            match t.send(SchedulerMessage.POLL):
-                case ThreadState.READY:
-                    runnables.append(t)
+        total.append(thrd)
 
-            # if not raised StopIteration, then the thread is not finished
-            available.append(t)
+    return ready, total
 
-    return runnables, available
+
+def spawn_coroutines(ts: Iterable[SimThreadConstructor]) -> list[SimThread]:
+    """Prepare the actual coroutine objects from constructors."""
+
+    def simthread_wrapper(t: SimThreadConstructor) -> SimThread:
+        """The wrapper simthread.
+
+        This wrapper is a tricky one. It wraps the user-provided simthread
+        between early `schedule` call (to not force the user simthreads to
+        synchronize the thread start by themselves), and the lately `finish`
+        call to avoid StopIteration handling.
+        """
+        yield from schedule()
+        yield from t()
+        yield from finish()
+
+    threads = [simthread_wrapper(t) for t in ts]
+
+    # spawn all the generators
+    for thrd in threads:
+        state = next(thrd)
+        # must stop with `yield` state
+        assert state == ThreadState.YIELD, state
+
+    return threads
 
 
 def run(coros: Iterable[SimThreadConstructor]):
@@ -40,11 +65,7 @@ def run(coros: Iterable[SimThreadConstructor]):
     coroutines provided and simulates it random interleaving until all the
     threads are finished or a deadlock is discovered.
     """
-    threads = [coro() for coro in coros]
-
-    # spawn all the generators
-    for t in threads:
-        next(t)
+    threads = spawn_coroutines(coros)
 
     while True:
         runnables, available = poll(threads)
@@ -55,22 +76,23 @@ def run(coros: Iterable[SimThreadConstructor]):
                 print("failed - deadlock detected")
             break
 
-        t = random.choice(runnables)
-        with contextlib.suppress(StopIteration):
-            t.send(SchedulerMessage.CONT)
+        # pick up the random thread and advance it
+        thrd = random.choice(runnables)
+        state = thrd.send(SchedulerMessage.CONT)
+
+        # put some asserts to catch errors early
+        assert state == ThreadState.YIELD, state
 
 
 def test_core():
     trace = []
 
     def thrd1() -> SimThread:
-        yield from schedule()
         trace.append("A")
         yield from schedule()
         trace.append("B")
 
     def thrd2() -> SimThread:
-        yield from schedule()
         trace.append("X")
         yield from schedule()
         trace.append("Y")
