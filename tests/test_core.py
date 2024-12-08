@@ -48,6 +48,24 @@ def test_explicit_finish():
     assert steps == [True, False], "must not execute after finish"
 
 
+def test_nested_finish():
+    """The thread must finished when called from sub-coroutines."""
+    steps = [False, False]
+
+    def calls_exit() -> SimThread:
+        """Just call `finish`."""
+        yield from finish()
+
+    def thread() -> SimThread:
+        """Simulate thread early exit."""
+        steps[0] = True
+        yield from calls_exit()
+        steps[1] = True  # unreachable
+
+    assert run([thread]), "must not deadlock"
+    assert steps == [True, False], "must not execute after finish"
+
+
 def test_multiple_threads():
     """All the threads must spawn and complete."""
     nr_threads = 5
