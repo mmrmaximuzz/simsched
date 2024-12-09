@@ -85,19 +85,31 @@ class SimDeadlock:
     """Engine run ended with deadlock."""
 
 
-SimResult: TypeAlias = SimOk | SimDeadlock
+@dataclass
+class SimTimeout:
+    """Engine did not finish the run due to number of steps being exceeded."""
 
 
-def run(coros: Iterable[SimThreadConstructor]) -> SimResult:
-    """Run the simulation engine till the end of execution.
+SimResult: TypeAlias = SimOk | SimDeadlock | SimTimeout
+
+
+def run(
+    coros: Iterable[SimThreadConstructor],
+    max_steps: int = 1000,
+) -> SimResult:
+    """Run the simulation engine till we get some result.
 
     This is the main function of the simthread tool. It spawns all the
-    coroutines provided and simulates it random interleaving until all the
-    threads are finished or a deadlock is discovered.
+    coroutines provided and simulates it random interleaving. It stops when
+    some condition happened:
+    * all the threads are complete - OK
+    * on some step only blocked threads remain - DEADLOCK
+    * step limit exceeded - TIMEOUT
     """
     threads = spawn_coroutines(coros)
 
-    while True:
+    # account the fact we need one additional pseudostep to start a thread
+    for _ in range(max_steps + len(threads)):
         runnables, available = poll(threads)
         if not runnables:
             if not available:
@@ -113,3 +125,6 @@ def run(coros: Iterable[SimThreadConstructor]) -> SimResult:
 
         # put some asserts to catch errors early
         assert state == ThreadState.YIELD, state
+    else:
+        # the loop is completed, too many steps - TIMEOUT
+        return SimTimeout()

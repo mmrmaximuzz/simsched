@@ -17,7 +17,7 @@
 from functools import partial
 
 from simsched.core import SimThread, cond_schedule, finish, schedule
-from simsched.engine import SimDeadlock, SimOk, run
+from simsched.engine import SimDeadlock, SimOk, SimTimeout, run
 
 
 def test_single_thread():
@@ -92,3 +92,31 @@ def test_simple_deadlock():
 
     assert run([thread]) == SimDeadlock(), "must detect deadlock"
     assert steps == [True, False], "must stop when deadlocked"
+
+
+def test_timeout():
+    """Engine must detect timeouts."""
+
+    def thread() -> SimThread:
+        """Simulate long thread."""
+        # step 1
+        yield from schedule()
+        # step 2
+        yield from schedule()
+        # step 3
+        yield from schedule()
+        # step 4
+
+    assert run([thread], max_steps=3) == SimTimeout()
+    assert run([thread], max_steps=4) == SimOk()
+
+
+def test_loop_detection():
+    """Engine must detect loops with default value of max_steps."""
+
+    def thread() -> SimThread:
+        """Simulate endless thread."""
+        while True:
+            yield from schedule()
+
+    assert run([thread]) == SimTimeout(), "endless loops must be timeouted"
