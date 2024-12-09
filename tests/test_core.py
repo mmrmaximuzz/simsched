@@ -17,7 +17,7 @@
 from functools import partial
 
 from simsched.core import SimThread, cond_schedule, finish, schedule
-from simsched.engine import SimDeadlock, SimOk, SimTimeout, run
+from simsched.engine import SimDeadlock, SimOk, SimPanic, SimTimeout, run
 
 
 def test_single_thread():
@@ -120,3 +120,17 @@ def test_loop_detection():
             yield from schedule()
 
     assert run([thread]) == SimTimeout(), "endless loops must be timeouted"
+
+
+def test_simple_exception():
+    """Engine must catch exceptions when advancing threads."""
+
+    def thread() -> SimThread:
+        """Simulate thread with error happened."""
+        yield from schedule()
+        raise RuntimeError("testmsg")
+
+    res = run([thread])
+    assert isinstance(res, SimPanic), "result type must be PANIC"
+    assert isinstance(res.e, RuntimeError), "must provide the exception object"
+    assert res.e.args == ("testmsg",), "must provide the exception object"

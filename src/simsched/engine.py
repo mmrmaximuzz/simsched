@@ -90,7 +90,14 @@ class SimTimeout:
     """Engine did not finish the run due to number of steps being exceeded."""
 
 
-SimResult: TypeAlias = SimOk | SimDeadlock | SimTimeout
+@dataclass
+class SimPanic:
+    """Engine catched some exception when advancing some thread."""
+
+    e: Exception
+
+
+SimResult: TypeAlias = SimOk | SimDeadlock | SimTimeout | SimPanic
 
 
 def run(
@@ -105,6 +112,7 @@ def run(
     * all the threads are complete - OK
     * on some step only blocked threads remain - DEADLOCK
     * step limit exceeded - TIMEOUT
+    * some thread raised an exception - PANIC
     """
     threads = spawn_coroutines(coros)
 
@@ -119,9 +127,15 @@ def run(
                 # no runnables but some are not finished - DEADLOCK
                 return SimDeadlock()
 
-        # pick up the random thread and advance it
+        # pick up the random thread to advance
         thrd = random.choice(runnables)
-        state = thrd.send(SchedulerMessage.CONT)
+        try:
+            # Catch exceptions only when advancing threads with user-provided
+            # code. It is the only place where it is permitted to happen - i.e.
+            # no exceptions allowed when polling threads.
+            state = thrd.send(SchedulerMessage.CONT)
+        except Exception as e:
+            return SimPanic(e)
 
         # put some asserts to catch errors early
         assert state == ThreadState.YIELD, state
