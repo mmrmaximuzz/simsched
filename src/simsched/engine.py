@@ -104,7 +104,7 @@ def run(
     coros: Iterable[SimThreadConstructor],
     max_steps: int = 1000,
 ) -> SimResult:
-    """Run the simulation engine till we get some result.
+    """Run the engine till we get some result.
 
     This is the main function of the simthread tool. It spawns all the
     coroutines provided and simulates it random interleaving. It stops when
