@@ -18,6 +18,7 @@
 
 import random
 from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 from typing import TypeAlias
 
 from .core import SchedulerMessage, SimThread, ThreadState, finish, schedule
@@ -74,7 +75,20 @@ def spawn_coroutines(ts: Iterable[SimThreadConstructor]) -> list[SimThread]:
     return threads
 
 
-def run(coros: Iterable[SimThreadConstructor]) -> bool:
+@dataclass
+class SimOk:
+    """Engine run ended with OK result."""
+
+
+@dataclass
+class SimDeadlock:
+    """Engine run ended with deadlock."""
+
+
+SimResult: TypeAlias = SimOk | SimDeadlock
+
+
+def run(coros: Iterable[SimThreadConstructor]) -> SimResult:
     """Run the simulation engine till the end of execution.
 
     This is the main function of the simthread tool. It spawns all the
@@ -88,10 +102,10 @@ def run(coros: Iterable[SimThreadConstructor]) -> bool:
         if not runnables:
             if not available:
                 # no runnables and all finished - OK
-                return True
+                return SimOk()
             else:
                 # no runnables but some are not finished - DEADLOCK
-                return False
+                return SimDeadlock()
 
         # pick up the random thread and advance it
         thrd = random.choice(runnables)

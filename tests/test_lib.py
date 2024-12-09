@@ -15,7 +15,7 @@
 # this program. If not, see <https://www.gnu.org/licenses/>.
 
 from simsched.core import SimThread, schedule
-from simsched.engine import run
+from simsched.engine import SimDeadlock, SimOk, run
 from simsched.lib import Mutex
 
 
@@ -27,7 +27,7 @@ def test_mutex_single_lock():
         """Simulate just one lock operation."""
         yield from mtx.lock()
 
-    assert run([thread]), "must not deadlock"
+    assert run([thread]) == SimOk(), "must not deadlock"
     assert mtx.locked, "must be locked"
 
 
@@ -39,7 +39,7 @@ def test_mutex_single_unlock():
         """Simulate just one unlock operation."""
         yield from mtx.unlock()
 
-    assert run([thread]), "must not deadlock"
+    assert run([thread]) == SimOk(), "must not deadlock"
     assert not mtx.locked, "must be unlocked"
 
 
@@ -52,7 +52,7 @@ def test_mutex_lock_unlock():
         yield from mtx.lock()
         yield from mtx.unlock()
 
-    assert run([thread]), "must not deadlock"
+    assert run([thread]) == SimOk(), "must not deadlock"
     assert not mtx.locked, "must be unlocked"
 
 
@@ -65,7 +65,7 @@ def test_mutex_self_deadlock():
         yield from mtx.lock()
         yield from mtx.lock()  # deadlock
 
-    assert not run([thread]), "must deadlock"
+    assert run([thread]) == SimDeadlock(), "must deadlock"
     assert mtx.locked, "must be locked forever"
 
 
@@ -83,5 +83,5 @@ def test_mutex_counter_data_race():
         yield from mtx.unlock()
 
     nr_threads = 10
-    assert run(thread for _ in range(nr_threads)), "must finish"
+    assert run(thread for _ in range(nr_threads)) == SimOk(), "must finish"
     assert cell[0] == nr_threads, "have correct value"
