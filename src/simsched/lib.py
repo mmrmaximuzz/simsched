@@ -33,7 +33,13 @@ class Mutex:
         self.locked = True
 
     def unlock(self) -> SimThread:
-        """Release the lock and yield the execution."""
+        """Release the lock and yield the execution.
+
+        If not locked, the exception is raised.
+        """
+        if not self.locked:
+            raise RuntimeError("trying to unlock non-locked mutex")
+
         self.locked = False
 
         # Immediately return the control to the scheduler to give other threads

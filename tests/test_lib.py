@@ -15,7 +15,7 @@
 # this program. If not, see <https://www.gnu.org/licenses/>.
 
 from simsched.core import SimThread, schedule
-from simsched.engine import SimDeadlock, SimOk, run
+from simsched.engine import SimDeadlock, SimOk, SimPanic, run
 from simsched.lib import Mutex
 
 
@@ -85,3 +85,17 @@ def test_mutex_counter_data_race():
     nr_threads = 10
     assert run(thread for _ in range(nr_threads)) == SimOk(), "must finish"
     assert cell[0] == nr_threads, "have correct value"
+
+
+def test_mutex_unlock_when_not_locked():
+    """Must raise panic when unlocking free mutex."""
+    mtx = Mutex()
+
+    def thread() -> SimThread:
+        """Simulate self-deadlock."""
+        yield from mtx.unlock()
+
+    res = run([thread])
+    assert isinstance(res, SimPanic), "must got PANIC"
+    assert isinstance(res.e, RuntimeError), "must get exact type"
+    assert not mtx.locked, "must remain unlocked"
