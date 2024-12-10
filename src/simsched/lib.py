@@ -26,6 +26,7 @@ class Mutex:
     """Simple mutual exclusion primitive."""
 
     locked: bool = False
+    label: str | None = None
 
     def lock(self) -> SimThread:
         """Try to aquire the lock."""
