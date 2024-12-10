@@ -32,20 +32,17 @@ def test_simsched_simple():
 
     def looper(stats: RunStats) -> LoopController:
         """Simple looper with upper limit of cycles."""
-        for _ in range(nr_iters):
+        while stats.total < nr_iters:
             yield
-            # can access the statistics to control execution
-            assert stats.ok
-            assert stats.deadlock == 0
-            assert stats.timeout == 0
-            assert stats.panic == 0
 
     def thread() -> SimThread:
         """Simple thread to execute."""
         yield from schedule()
 
     stats = simsched([thread], looper)
-    assert stats == RunStats(ok=nr_iters, deadlock=0, timeout=0, panic=0)
+    assert stats == RunStats(
+        total=nr_iters, ok=nr_iters, deadlock=0, timeout=0, panic=0
+    )
 
 
 def test_simsched_abba_deadlock():
@@ -55,7 +52,7 @@ def test_simsched_abba_deadlock():
         """Loop until deadlock is discovered with some upper limit."""
         # 1000 iterations must be enough to catch this deadlock.
         # If not, fix the bug or recheck your `random` Python module.
-        for _ in range(1000):
+        while stats.total < 1000:
             yield
             if stats.deadlock != 0:
                 # deadlock detected
@@ -81,6 +78,7 @@ def test_simsched_abba_deadlock():
         yield from b.unlock()
 
     stats = simsched([t0, t1], looper)
+    assert stats.total > 0, "at least one run"
     assert stats.deadlock == 1, "must stop on the first deadlock"
     assert stats.timeout == 0, "must not timeout"
     assert stats.panic == 0, "must not panic"

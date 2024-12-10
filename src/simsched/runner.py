@@ -37,6 +37,7 @@ from simsched.engine import (
 class RunStats:
     """Simulation statistics."""
 
+    total: int = 0
     ok: int = 0
     deadlock: int = 0
     timeout: int = 0
@@ -70,6 +71,8 @@ def simsched(
                     stats.timeout += 1
                 case SimPanic(_):
                     stats.panic += 1
+
+            stats.total += 1
 
     return stats
 
