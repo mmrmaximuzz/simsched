@@ -17,6 +17,7 @@
 from functools import partial
 
 from simsched.core import SimThread, schedule
+from simsched.engine import SimDeadlock, SimOk
 from simsched.lib import Mutex
 from simsched.runner import (
     LoopController,
@@ -41,7 +42,12 @@ def test_simsched_simple():
 
     stats = simsched([thread], looper)
     assert stats == RunStats(
-        total=nr_iters, ok=nr_iters, deadlock=0, timeout=0, panic=0
+        total=nr_iters,
+        ok=nr_iters,
+        deadlock=0,
+        timeout=0,
+        panic=0,
+        last=SimOk(),
     )
 
 
@@ -54,7 +60,7 @@ def test_simsched_abba_deadlock():
         # If not, fix the bug or recheck your `random` Python module.
         while stats.total < 1000:
             yield
-            if stats.deadlock != 0:
+            if stats.last == SimDeadlock():
                 # deadlock detected
                 return
 

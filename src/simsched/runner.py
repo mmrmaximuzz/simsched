@@ -27,6 +27,7 @@ from simsched.engine import (
     SimDeadlock,
     SimOk,
     SimPanic,
+    SimResult,
     SimThreadConstructor,
     SimTimeout,
     run,
@@ -42,6 +43,7 @@ class RunStats:
     deadlock: int = 0
     timeout: int = 0
     panic: int = 0
+    last: SimResult | None = None
 
 
 LoopController: TypeAlias = Iterator[None]
@@ -52,7 +54,13 @@ def simsched(
     icoros: Iterable[SimThreadConstructor],
     loopctr: LoopControllerConstructor,
 ) -> RunStats:
-    """Start simulated schedulung."""
+    """Start simulated scheduling.
+
+    This function calls engine in an endless loop and collects execution stats.
+    The loop is controlled by LoopController iterator object which is called
+    before each run. This object could the loop based on its own decision about
+    execution stats; it could also clear the environment for the threads.
+    """
     # create a stats object to collect data and communicate with the controller
     stats = RunStats()
 
@@ -62,7 +70,8 @@ def simsched(
     # run until loopctr returns or CTRL+C
     with contextlib.suppress(KeyboardInterrupt):
         for _ in loopctr(stats):
-            match run(coros):
+            result = run(coros)
+            match result:
                 case SimOk():
                     stats.ok += 1
                 case SimDeadlock():
@@ -73,6 +82,7 @@ def simsched(
                     stats.panic += 1
 
             stats.total += 1
+            stats.last = result
 
     return stats
 
