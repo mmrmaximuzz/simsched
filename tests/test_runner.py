@@ -14,9 +14,16 @@
 # You should have received a copy of the GNU General Public License along with
 # this program. If not, see <https://www.gnu.org/licenses/>.
 
+from functools import partial
+
 from simsched.core import SimThread, schedule
 from simsched.lib import Mutex
-from simsched.runner import LoopController, RunStats, simsched
+from simsched.runner import (
+    LoopController,
+    RunStats,
+    simsched,
+    time_report_looper,
+)
 
 
 def test_simsched_simple():
@@ -77,3 +84,30 @@ def test_simsched_abba_deadlock():
     assert stats.deadlock == 1, "must stop on the first deadlock"
     assert stats.timeout == 0, "must not timeout"
     assert stats.panic == 0, "must not panic"
+
+
+def test_time_report_looper():
+    """Time based looper must call report."""
+    # simulate capturing environment for reporter function
+    env = {
+        "times": [],
+        "oks": [],
+    }
+
+    def reporter(time: float, stats: RunStats) -> None:
+        """Reporter collects OK results for 3 periods."""
+        env["times"].append(time)
+        env["oks"].append(stats.ok)
+        if len(env["times"]) >= 3:
+            raise KeyboardInterrupt  # simched must stop on KeyboardInterrupt
+
+    looper = partial(time_report_looper, reporter, 0.01)
+
+    def thread() -> SimThread:
+        """Do nothing."""
+        yield from schedule()
+
+    simsched([thread], looper)
+    assert len(env["oks"]) == 3
+    assert env["oks"][0] < env["oks"][1] < env["oks"][2], "oks must increase"
+    assert all(t >= 0.01 for t in env["times"]), "must keep interval"

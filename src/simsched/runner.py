@@ -16,6 +16,9 @@
 
 """Module for running simulations."""
 
+import contextlib
+import itertools
+import time
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from typing import TypeAlias
@@ -49,20 +52,43 @@ def simsched(
     loopctr: LoopControllerConstructor,
 ) -> RunStats:
     """Start simulated schedulung."""
+    # create a stats object to collect data and communicate with the controller
+    stats = RunStats()
+
     # convert provided iterable to a list to fix the order of coroutines
     coros = list(icoros)
 
-    stats = RunStats()
-
-    for _ in loopctr(stats):
-        match run(coros):
-            case SimOk():
-                stats.ok += 1
-            case SimDeadlock():
-                stats.deadlock += 1
-            case SimTimeout():
-                stats.timeout += 1
-            case SimPanic(_):
-                stats.panic += 1
+    # run until loopctr returns or CTRL+C
+    with contextlib.suppress(KeyboardInterrupt):
+        for _ in loopctr(stats):
+            match run(coros):
+                case SimOk():
+                    stats.ok += 1
+                case SimDeadlock():
+                    stats.deadlock += 1
+                case SimTimeout():
+                    stats.timeout += 1
+                case SimPanic(_):
+                    stats.panic += 1
 
     return stats
+
+
+# some collection of pre-defined loopers
+
+
+def time_report_looper(
+    reporter: Callable[[float, RunStats], None],
+    every_sec: float,
+    stats: RunStats,
+) -> LoopController:
+    """Loop and call `report` every interval provided."""
+    start = time.time()
+    for _ in itertools.count():
+        yield  # run the simulator
+
+        # check how much time passed and report
+        end = time.time()
+        if end - start >= every_sec:
+            reporter(end - start, stats)
+            start = end
