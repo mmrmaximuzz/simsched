@@ -87,7 +87,5 @@ def finish() -> SimThread:
     """
     cmd = yield ThreadState.YIELD
     while True:
-        if cmd != SchedulerMessage.POLL:
-            raise AssertionError(f"bad command for finished thread: {cmd}")
-
+        assert cmd == SchedulerMessage.POLL, cmd
         cmd = yield ThreadState.FINAL
