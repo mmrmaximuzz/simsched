@@ -16,9 +16,20 @@
 
 """Collection of scheduling/synchronization primitives."""
 
+import collections
 from dataclasses import dataclass
+from typing import Any, Generic, TypeVar
 
 from simsched.core import SimThread, cond_schedule, schedule
+
+Item = TypeVar("Item")
+
+
+@dataclass
+class Cell(Generic[Item]):
+    """Mutable container for any type."""
+
+    val: Item
 
 
 @dataclass
@@ -42,7 +53,34 @@ class Mutex:
             raise RuntimeError("trying to unlock non-locked mutex")
 
         self.locked = False
-
-        # Immediately return the control to the scheduler to give other threads
-        # a chance to compete for this lock.
         yield from schedule()
+
+
+@dataclass
+class TxChannel:
+    """Generic one-way TX channel for passing objects of any type."""
+
+    buf: collections.deque[Any]
+
+    def send(self, item: Any) -> SimThread:
+        """Put the item to the channel."""
+        self.buf.append(item)
+        yield from schedule()
+
+
+@dataclass
+class RxChannel:
+    """Generic one-way RX channel for receiving objects of any type."""
+
+    buf: collections.deque[Any]
+
+    def recv(self, ret: Cell[Any]) -> SimThread:
+        """Get the item from the channel if present and block otherwise."""
+        yield from cond_schedule(lambda: bool(self.buf))
+        ret.val = self.buf.popleft()
+
+
+def create_channel() -> tuple[TxChannel, RxChannel]:
+    """Create pair of channels."""
+    buf = collections.deque()  # create shared buffer
+    return TxChannel(buf), RxChannel(buf)
