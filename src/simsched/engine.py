@@ -134,6 +134,9 @@ def run(
             # code. It is the only place where it is permitted to happen - i.e.
             # no exceptions allowed when polling threads.
             state = thrd.send(SchedulerMessage.CONT)
+        except KeyboardInterrupt:
+            # Do not interpret this as a thread panic, just reraise it.
+            raise
         except Exception as e:
             return SimPanic(e)
 
