@@ -66,7 +66,7 @@ def demo() -> None:
                 new = trace not in deadlocks
                 deadlocks.add(trace)
                 if new:
-                    print(f"-> deadlock discovered {len(deadlocks)} total")
+                    print(f"-> deadlock discovered ({len(deadlocks)} total)")
 
             # clear the state before the next run
             mtx_a.locked = False
