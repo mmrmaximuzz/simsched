@@ -23,22 +23,16 @@ This example collects the observed counter values in a simulation.
 """
 
 import collections
-from dataclasses import dataclass
+from collections.abc import MutableMapping
 from functools import partial
 import sys
 
 from simsched.core import SimThread, schedule
 from simsched.runner import LoopController, RunStats, simsched
+from simsched.lib import Cell
 
 
-@dataclass
-class Cell:
-    """Mutable int wrapper."""
-
-    val: int = 0
-
-
-def bad_inc_thread(counter: Cell, nr_incs: int) -> SimThread:
+def bad_inc_thread(counter: Cell[int], nr_incs: int) -> SimThread:
     """Non-atomic incrementer."""
     for _ in range(nr_incs):
         val = counter.val
@@ -49,8 +43,8 @@ def bad_inc_thread(counter: Cell, nr_incs: int) -> SimThread:
 def demo(nr_threads: int = 5, nr_incs: int = 3) -> None:
     """Run non-atomic counter increment demo with params."""
     # create environment to keep between simulation runs
-    counter = Cell()
-    outputs = collections.defaultdict(int)
+    counter = Cell(0)
+    outputs: MutableMapping[int, int] = collections.defaultdict(int)
 
     # define the looper object to control the execution loop
     def looper(stats: RunStats) -> LoopController:
