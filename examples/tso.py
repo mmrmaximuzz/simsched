@@ -34,7 +34,7 @@ import itertools
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from functools import partial
-from typing import Callable, TypeAlias
+from typing import Callable, Mapping, Protocol, TypeAlias
 
 from simsched.core import SimThread, cond_schedule
 from simsched.engine import SimOk, SimThreadConstructor
@@ -158,6 +158,7 @@ class TSO:
 
 # immutable tuple of variable values to keep it as a dict key
 Snapshot: TypeAlias = tuple[tuple[str, int], ...]
+SnapshotCollector = Callable[[], Snapshot]
 
 
 @dataclass
@@ -184,7 +185,7 @@ class ObservedStats:
 
 def reg_count_looper(
     outputs: ObservedStats,
-    collector: Callable[[], Snapshot],
+    collector: SnapshotCollector,
     tso: TSO,
     stats: RunStats,
 ) -> LoopController:
@@ -202,7 +203,24 @@ def reg_count_looper(
         yield  # next run
 
 
-def sb() -> None:
+Config: TypeAlias = tuple[TSO, list[SimThreadConstructor], SnapshotCollector]
+
+
+class Demo(Protocol):
+    """Template for x86-TSO examples."""
+
+    @staticmethod
+    def configure() -> Config:
+        """Run the demo and collect observed states."""
+        ...
+
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        """The snapshot to check after the execution."""
+        ...
+
+
+class SbDemo:
     """SB example.
 
     This test shows that store buffering is observable.
@@ -220,47 +238,37 @@ def sb() -> None:
     - both proc0 and proc1 read x and y from memory and get zeroes
     - both storebuffers flush
     """
-    tso = TSO(nr_threads=2)
-    p0, p1 = tso.procs
 
-    def t0() -> SimThread:
-        """Proc 0 for `sb` example."""
-        yield from p0.mov(Addr("x"), 1)
-        yield from p0.mov(Reg("eax"), Addr("y"))
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=2)
+        p0, p1 = tso.procs
 
-    def t1() -> SimThread:
-        """Proc 1 for `sb` example."""
-        yield from p1.mov(Addr("y"), 1)
-        yield from p1.mov(Reg("ebx"), Addr("x"))
+        def t0() -> SimThread:
+            """Proc 0 for `sb` example."""
+            yield from p0.mov(Addr("x"), 1)
+            yield from p0.mov(Reg("eax"), Addr("y"))
 
-    def get_regs() -> Snapshot:
-        return (
-            ("p0.eax", p0.regs[Reg("eax")]),
-            ("p1.ebx", p1.regs[Reg("ebx")]),
-        )
+        def t1() -> SimThread:
+            """Proc 1 for `sb` example."""
+            yield from p1.mov(Addr("y"), 1)
+            yield from p1.mov(Reg("ebx"), Addr("x"))
 
-    print(sb.__doc__)
-    print("Running the simulator, hit Ctrl+C to stop...")
+        def snapshot() -> Snapshot:
+            return (
+                ("p0.eax", p0.regs[Reg("eax")]),
+                ("p1.ebx", p1.regs[Reg("ebx")]),
+            )
 
-    outputs = ObservedStats()
-    simsched(
-        itertools.chain(
-            [partial(p0.wrap, t0), partial(p1.wrap, t1)],
-            tso.sbctrs,
-        ),
-        loopctr=partial(reg_count_looper, outputs, get_regs, tso),
-    )
+        return tso, [t0, t1], snapshot
 
-    print("interrupted\n")
-    print("Observed states:")
-    print(outputs)
-
-    allowed = (("p0.eax", 0), ("p1.ebx", 0))
-    count = outputs.storage.get(allowed, 0)
-    print(f"allowed state: {allowed} happened {count} times")
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        """The snapshot to check after the execution."""
+        return (("p0.eax", 0), ("p1.ebx", 0)), True
 
 
-def iriw() -> None:
+class IriwDemo:
     """IRIW example.
 
     -------------------------------------------------------------
@@ -271,108 +279,47 @@ def iriw() -> None:
     -------------------------------------------------------------
     Forbidden Final State: P2:EAX=1 and P2:EBX=0 and P3:ECX=1 and P3:EDX=0.
     """
-    tso = TSO(nr_threads=4)
-    p0, p1, p2, p3 = tso.procs
 
-    def t0() -> SimThread:
-        """Proc 0 for `iriw` example."""
-        yield from p0.mov(Addr("x"), 1)
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=4)
+        p0, p1, p2, p3 = tso.procs
 
-    def t1() -> SimThread:
-        """Proc 1 for `iriw` example."""
-        yield from p1.mov(Addr("y"), 1)
+        def t0() -> SimThread:
+            """Proc 0 for `iriw` example."""
+            yield from p0.mov(Addr("x"), 1)
 
-    def t2() -> SimThread:
-        """Proc 2 for `iriw` example."""
-        yield from p2.mov(Reg("eax"), Addr("x"))
-        yield from p2.mov(Reg("ebx"), Addr("y"))
+        def t1() -> SimThread:
+            """Proc 1 for `iriw` example."""
+            yield from p1.mov(Addr("y"), 1)
 
-    def t3() -> SimThread:
-        """Proc 3 for `iriw` example."""
-        yield from p3.mov(Reg("ecx"), Addr("y"))
-        yield from p3.mov(Reg("edx"), Addr("x"))
+        def t2() -> SimThread:
+            """Proc 2 for `iriw` example."""
+            yield from p2.mov(Reg("eax"), Addr("x"))
+            yield from p2.mov(Reg("ebx"), Addr("y"))
 
-    def get_regs() -> Snapshot:
-        return (
-            ("p2.eax", p2.regs[Reg("eax")]),
-            ("p2.ebx", p2.regs[Reg("ebx")]),
-            ("p3.ecx", p3.regs[Reg("ecx")]),
-            ("p3.edx", p3.regs[Reg("edx")]),
-        )
+        def t3() -> SimThread:
+            """Proc 3 for `iriw` example."""
+            yield from p3.mov(Reg("ecx"), Addr("y"))
+            yield from p3.mov(Reg("edx"), Addr("x"))
 
-    print(iriw.__doc__)
-    print("Running the simulator, hit Ctrl+C to stop...")
+        def snapshot() -> Snapshot:
+            return (
+                ("p2.eax", p2.regs[Reg("eax")]),
+                ("p2.ebx", p2.regs[Reg("ebx")]),
+                ("p3.ecx", p3.regs[Reg("ecx")]),
+                ("p3.edx", p3.regs[Reg("edx")]),
+            )
 
-    outputs = ObservedStats()
-    simsched(
-        itertools.chain(
-            [partial(p.wrap, t) for p, t in zip(tso.procs, [t0, t1, t2, t3])],
-            tso.sbctrs,
-        ),
-        loopctr=partial(reg_count_looper, outputs, get_regs, tso),
-    )
+        return tso, [t0, t1, t2, t3], snapshot
 
-    print("interrupted\n")
-    print("Observed states:")
-    print(outputs)
-
-    forbidden = (("p2.eax", 1), ("p2.ebx", 0), ("p3.ecx", 1), ("p3.edx", 0))
-    count = outputs.storage.get(forbidden, 0)
-    print(f"forbidden state: {forbidden} happened {count} times")
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        snap = ("p2.eax", 1), ("p2.ebx", 0), ("p3.ecx", 1), ("p3.edx", 0)
+        return snap, False
 
 
-def n5() -> None:
-    """n5 example.
-
-    -------------------------------
-    P0             | P1
-    ---------------+---------------
-    MOV [x] <- 1   | MOV [x] <- 2
-    MOV EAX <- [x] | MOV EBX <- [x]
-    -------------------------------
-    Forbidden Final State: P0:EAX=2 and P1:EBX=1
-    """
-    tso = TSO(nr_threads=2)
-    p0, p1 = tso.procs
-
-    def t0() -> SimThread:
-        """Proc 0 for `n5` example."""
-        yield from p0.mov(Addr("x"), 1)
-        yield from p0.mov(Reg("eax"), Addr("x"))
-
-    def t1() -> SimThread:
-        """Proc 1 for `n5` example."""
-        yield from p1.mov(Addr("x"), 2)
-        yield from p1.mov(Reg("ebx"), Addr("x"))
-
-    def get_regs() -> Snapshot:
-        return (
-            ("p0.eax", p0.regs[Reg("eax")]),
-            ("p1.ebx", p1.regs[Reg("ebx")]),
-        )
-
-    print(n5.__doc__)
-    print("Running the simulator, hit Ctrl+C to stop...")
-
-    outputs = ObservedStats()
-    simsched(
-        itertools.chain(
-            [partial(p.wrap, t) for p, t in zip(tso.procs, [t0, t1])],
-            tso.sbctrs,
-        ),
-        loopctr=partial(reg_count_looper, outputs, get_regs, tso),
-    )
-
-    print("interrupted\n")
-    print("Observed states:")
-    print(outputs)
-
-    forbidden = (("p0.eax", 2), ("p1.ebx", 1))
-    count = outputs.storage.get(forbidden, 0)
-    print(f"forbidden state: {forbidden} happened {count} times")
-
-
-def n6() -> None:
+class N6Demo:
     """n6 example.
 
     -----------------------------
@@ -391,49 +338,78 @@ def n6() -> None:
     - P1 flushes his store buffer
     - P0 finally flushes his store buffer, [x] = 1
     """
-    tso = TSO(nr_threads=2)
-    p0, p1 = tso.procs
 
-    def t0() -> SimThread:
-        """Proc 0 for `n6` example."""
-        yield from p0.mov(Addr("x"), 1)
-        yield from p0.mov(Reg("eax"), Addr("x"))
-        yield from p0.mov(Reg("ebx"), Addr("y"))
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=2)
+        p0, p1 = tso.procs
 
-    def t1() -> SimThread:
-        """Proc 1 for `n6` example."""
-        yield from p1.mov(Addr("y"), 2)
-        yield from p1.mov(Addr("x"), 2)
+        def t0() -> SimThread:
+            """Proc 0 for `n6` example."""
+            yield from p0.mov(Addr("x"), 1)
+            yield from p0.mov(Reg("eax"), Addr("x"))
+            yield from p0.mov(Reg("ebx"), Addr("y"))
 
-    def get_snap() -> Snapshot:
-        return (
-            ("p0.eax", p0.regs[Reg("eax")]),
-            ("p0.ebx", p0.regs[Reg("ebx")]),
-            ("[x]", tso.mem[Addr("x")]),
-        )
+        def t1() -> SimThread:
+            """Proc 1 for `n6` example."""
+            yield from p1.mov(Addr("y"), 2)
+            yield from p1.mov(Addr("x"), 2)
 
-    print(n6.__doc__)
-    print("Running the simulator, hit Ctrl+C to stop...")
+        def snapshot() -> Snapshot:
+            return (
+                ("p0.eax", p0.regs[Reg("eax")]),
+                ("p0.ebx", p0.regs[Reg("ebx")]),
+                ("[x]", tso.mem[Addr("x")]),
+            )
 
-    outputs = ObservedStats()
-    simsched(
-        itertools.chain(
-            [partial(p.wrap, t) for p, t in zip(tso.procs, [t0, t1])],
-            tso.sbctrs,
-        ),
-        loopctr=partial(reg_count_looper, outputs, get_snap, tso),
-    )
+        return tso, [t0, t1], snapshot
 
-    print("interrupted\n")
-    print("Observed states:")
-    print(outputs)
-
-    allowed = (("p0.eax", 1), ("p0.ebx", 0), ("[x]", 1))
-    count = outputs.storage.get(allowed, 0)
-    print(f"allowed state: {allowed} happened {count} times")
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        return (("p0.eax", 1), ("p0.ebx", 0), ("[x]", 1)), True
 
 
-def n4b() -> None:
+class N5Demo:
+    """n5 example.
+
+    -------------------------------
+    P0             | P1
+    ---------------+---------------
+    MOV [x] <- 1   | MOV [x] <- 2
+    MOV EAX <- [x] | MOV EBX <- [x]
+    -------------------------------
+    Forbidden Final State: P0:EAX=2 and P1:EBX=1
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=2)
+        p0, p1 = tso.procs
+
+        def t0() -> SimThread:
+            """Proc 0 for `n5` example."""
+            yield from p0.mov(Addr("x"), 1)
+            yield from p0.mov(Reg("eax"), Addr("x"))
+
+        def t1() -> SimThread:
+            """Proc 1 for `n5` example."""
+            yield from p1.mov(Addr("x"), 2)
+            yield from p1.mov(Reg("ebx"), Addr("x"))
+
+        def snapshot() -> Snapshot:
+            return (
+                ("p0.eax", p0.regs[Reg("eax")]),
+                ("p1.ebx", p1.regs[Reg("ebx")]),
+            )
+
+        return tso, [t0, t1], snapshot
+
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        return (("p0.eax", 2), ("p1.ebx", 1)), False
+
+
+class N4bDemo:
     """n4b example.
 
     -------------------------------
@@ -444,52 +420,72 @@ def n4b() -> None:
     -------------------------------
     Forbidden Final State: P0:EAX=2 and P1:ECX=1
     """
-    tso = TSO(nr_threads=2)
-    p0, p1 = tso.procs
 
-    def t0() -> SimThread:
-        """Proc 0 for `n5` example."""
-        yield from p0.mov(Reg("eax"), Addr("x"))
-        yield from p0.mov(Addr("x"), 1)
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=2)
+        p0, p1 = tso.procs
 
-    def t1() -> SimThread:
-        """Proc 1 for `n5` example."""
-        yield from p1.mov(Reg("ecx"), Addr("x"))
-        yield from p1.mov(Addr("x"), 2)
+        def t0() -> SimThread:
+            """Proc 0 for `n5` example."""
+            yield from p0.mov(Reg("eax"), Addr("x"))
+            yield from p0.mov(Addr("x"), 1)
 
-    def get_regs() -> Snapshot:
-        return (
-            ("p0.eax", p0.regs[Reg("eax")]),
-            ("p1.ecx", p1.regs[Reg("ecx")]),
-        )
+        def t1() -> SimThread:
+            """Proc 1 for `n5` example."""
+            yield from p1.mov(Reg("ecx"), Addr("x"))
+            yield from p1.mov(Addr("x"), 2)
 
-    print(n4b.__doc__)
+        def snapshot() -> Snapshot:
+            return (
+                ("p0.eax", p0.regs[Reg("eax")]),
+                ("p1.ecx", p1.regs[Reg("ecx")]),
+            )
+
+        return tso, [t0, t1], snapshot
+
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        return (("p0.eax", 2), ("p1.ecx", 1)), False
+
+
+def play_demo(demo: type[Demo]) -> bool:
+    """Play the demo from the template."""
+    # prepare the demo
+    tso, thrctrs, snapshot = demo.configure()
+
+    print(demo.__doc__)
     print("Running the simulator, hit Ctrl+C to stop...")
 
+    # run the demo and collect the observed states
     outputs = ObservedStats()
     simsched(
         itertools.chain(
-            [partial(p.wrap, t) for p, t in zip(tso.procs, [t0, t1])],
+            [partial(p.wrap, t) for p, t in zip(tso.procs, thrctrs)],
             tso.sbctrs,
         ),
-        loopctr=partial(reg_count_looper, outputs, get_regs, tso),
+        loopctr=partial(reg_count_looper, outputs, snapshot, tso),
     )
 
     print("interrupted\n")
     print("Observed states:")
     print(outputs)
 
-    forbidden = (("p0.eax", 2), ("p1.ecx", 1))
-    count = outputs.storage.get(forbidden, 0)
-    print(f"forbidden state: {forbidden} happened {count} times")
+    # investigate the target snapshot
+    target, allowed = demo.target()
+    status = "Allowed" if allowed else "Forbidden"
+    count = outputs.storage.get(target, 0)
+    print(f"{status} state: {target} happened {count} times")
+
+    return allowed == bool(count)
 
 
-DEMOS = {
-    "sb": sb,
-    "iriw": iriw,
-    "n6": n6,
-    "n5": n5,
-    "n4b": n4b,
+DEMOS: Mapping[str, type[Demo]] = {
+    "sb": SbDemo,
+    "iriw": IriwDemo,
+    "n6": N6Demo,
+    "n5": N5Demo,
+    "n4b": N4bDemo,
 }
 
 
@@ -502,7 +498,7 @@ def main() -> None:
                 if name not in DEMOS:
                     raise NotImplementedError(name)
 
-                DEMOS[name]()
+                success = play_demo(DEMOS[name])
             case _:
                 raise ValueError
     except NotImplementedError as nie:
@@ -511,6 +507,8 @@ def main() -> None:
     except ValueError:
         print(f"usage: {prog} ({'|'.join(DEMOS)})")
         sys.exit(1)
+
+    sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":
