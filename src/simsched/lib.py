@@ -74,10 +74,19 @@ class RxChannel:
 
     buf: collections.deque[Any]
 
+    def peek(self, ret: Cell[Any]) -> SimThread:
+        """Block until item appears in the channel."""
+        yield from cond_schedule(lambda: bool(self.buf))
+        ret.val = self.buf[0]
+
+    def consume(self) -> None:
+        """Consume the current item."""
+        self.buf.popleft()
+
     def recv(self, ret: Cell[Any]) -> SimThread:
         """Get the item from the channel if present and block otherwise."""
-        yield from cond_schedule(lambda: bool(self.buf))
-        ret.val = self.buf.popleft()
+        yield from self.peek(ret)
+        self.consume()
 
 
 def create_channel() -> tuple[TxChannel, RxChannel]:

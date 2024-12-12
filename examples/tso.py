@@ -134,20 +134,26 @@ class TSO:
         cell: Cell[tuple[Addr, int] | None] = Cell(None)
 
         while True:
-            yield from rx.recv(cell)
+            # Do not consume the value, just peek. We need to store the value
+            # in the buffer as hwthread may try to read from pending stores.
+            yield from rx.peek(cell)
             match cell.val:
                 case (addr, value):
                     # can flush values only when the memory is not locked
                     yield from cond_schedule(lambda: not self.lock.locked)
                     self.mem[addr] = value
+                    rx.consume()  # now the value is flushed, we can remove it
                 case None:
                     # finish signal, done
+                    rx.consume()
                     return
+
 
     def reinit(self) -> None:
         """Reinit TSO state by freeing all written memory."""
         self.mem.clear()
         for p in self.procs:
+            assert not p.tx.buf, "must be empty when finished"
             p.regs.clear()
 
 
