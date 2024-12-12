@@ -245,12 +245,10 @@ class SbDemo:
         p0, p1 = tso.procs
 
         def t0() -> SimThread:
-            """Proc 0 for `sb` example."""
             yield from p0.mov(Addr("x"), 1)
             yield from p0.mov(Reg("eax"), Addr("y"))
 
         def t1() -> SimThread:
-            """Proc 1 for `sb` example."""
             yield from p1.mov(Addr("y"), 1)
             yield from p1.mov(Reg("ebx"), Addr("x"))
 
@@ -286,20 +284,16 @@ class IriwDemo:
         p0, p1, p2, p3 = tso.procs
 
         def t0() -> SimThread:
-            """Proc 0 for `iriw` example."""
             yield from p0.mov(Addr("x"), 1)
 
         def t1() -> SimThread:
-            """Proc 1 for `iriw` example."""
             yield from p1.mov(Addr("y"), 1)
 
         def t2() -> SimThread:
-            """Proc 2 for `iriw` example."""
             yield from p2.mov(Reg("eax"), Addr("x"))
             yield from p2.mov(Reg("ebx"), Addr("y"))
 
         def t3() -> SimThread:
-            """Proc 3 for `iriw` example."""
             yield from p3.mov(Reg("ecx"), Addr("y"))
             yield from p3.mov(Reg("edx"), Addr("x"))
 
@@ -345,13 +339,11 @@ class N6Demo:
         p0, p1 = tso.procs
 
         def t0() -> SimThread:
-            """Proc 0 for `n6` example."""
             yield from p0.mov(Addr("x"), 1)
             yield from p0.mov(Reg("eax"), Addr("x"))
             yield from p0.mov(Reg("ebx"), Addr("y"))
 
         def t1() -> SimThread:
-            """Proc 1 for `n6` example."""
             yield from p1.mov(Addr("y"), 2)
             yield from p1.mov(Addr("x"), 2)
 
@@ -387,12 +379,10 @@ class N5Demo:
         p0, p1 = tso.procs
 
         def t0() -> SimThread:
-            """Proc 0 for `n5` example."""
             yield from p0.mov(Addr("x"), 1)
             yield from p0.mov(Reg("eax"), Addr("x"))
 
         def t1() -> SimThread:
-            """Proc 1 for `n5` example."""
             yield from p1.mov(Addr("x"), 2)
             yield from p1.mov(Reg("ebx"), Addr("x"))
 
@@ -427,12 +417,10 @@ class N4bDemo:
         p0, p1 = tso.procs
 
         def t0() -> SimThread:
-            """Proc 0 for `n5` example."""
             yield from p0.mov(Reg("eax"), Addr("x"))
             yield from p0.mov(Addr("x"), 1)
 
         def t1() -> SimThread:
-            """Proc 1 for `n5` example."""
             yield from p1.mov(Reg("ecx"), Addr("x"))
             yield from p1.mov(Addr("x"), 2)
 
@@ -468,7 +456,7 @@ def play_demo(demo: type[Demo]) -> bool:
     )
 
     print("interrupted\n")
-    print("Observed states:")
+    print(f"Observed states (total {len(outputs.storage)}):")
     print(outputs)
 
     # investigate the target snapshot
