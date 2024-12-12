@@ -34,7 +34,7 @@ import itertools
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from functools import partial
-from typing import TypeAlias
+from typing import Callable, TypeAlias
 
 from simsched.core import SimThread, cond_schedule
 from simsched.engine import SimOk, SimThreadConstructor
@@ -158,21 +158,63 @@ class TSO:
 
 
 # immutable tuple of register values to keep it as a dict key
-RegState: TypeAlias = tuple[tuple[str, int], ...]
+RegSnapshot: TypeAlias = tuple[tuple[str, int], ...]
+
+
+@dataclass
+class RegStats:
+    """Class to store observed register outputs."""
+
+    storage: MutableMapping[RegSnapshot, int] = field(
+        default_factory=lambda: collections.defaultdict(int)
+    )
+
+    def add(self, snapshot: RegSnapshot) -> None:
+        """Add observed output to the collection."""
+        self.storage[snapshot] += 1
+
+    def __str__(self) -> str:
+        """Provide human-readable string."""
+        lines = []
+        for snap, count in sorted(self.storage.items()):
+            snapline = ", ".join(f"{reg} = {val}" for reg, val in snap)
+            lines.append(f"{snapline}: {count}")
+
+        return "\n".join(lines)
+
+
+def reg_count_looper(
+    outputs: RegStats,
+    collector: Callable[[], RegSnapshot],
+    tso: TSO,
+    stats: RunStats,
+) -> LoopController:
+    """Common looper for most of the TSO demos.
+
+    Collects registers on each loop and put snapshots into storage.
+    """
+    yield  # first run
+    while True:
+        assert stats.last == SimOk(), stats.last
+
+        snap = collector()
+        outputs.add(snap)
+        tso.reinit()  # explicit reinit
+        yield  # next run
 
 
 def sb() -> None:
-    """Store buffer example.
+    """SB example.
 
     This test shows that store buffering is observable.
 
     -------------------------------
-    Proc 0         | Proc 1
+    P0             | P1
     ---------------+---------------
     MOV [x] <- 1   | MOV [y] <- 1
     MOV EAX <- [y] | MOV EBX <- [x]
     -------------------------------
-    Allowed Final State: Proc 0: EAX = 0 and Proc 1: EBX = 0.
+    Allowed Final State: P0:EAX=0 and P1:EBX=0.
 
     The TSO explanation:
     - stores to x and y are buffered in both proc0 and proc1
@@ -192,50 +234,97 @@ def sb() -> None:
         yield from p1.mov(Addr("y"), 1)
         yield from p1.mov(Reg("ebx"), Addr("x"))
 
-    outputs: MutableMapping[RegState, int] = collections.defaultdict(int)
+    def get_regs() -> RegSnapshot:
+        return (
+            ("p0.eax", p0.regs[Reg("eax")]),
+            ("p1.ebx", p1.regs[Reg("ebx")]),
+        )
 
-    def looper(stats: RunStats) -> LoopController:
-        """Collect the possible outputs."""
-        yield  # first run
-        while True:
-            assert stats.last == SimOk(), stats.last
-
-            outputs[
-                (
-                    ("p0.eax", p0.regs[Reg("eax")]),
-                    ("p1.ebx", p1.regs[Reg("ebx")]),
-                )
-            ] += 1
-
-            # reinit TSO before next run
-            tso.reinit()
-            yield
-
-    print("Demo - sb")
     print(sb.__doc__)
     print("Running the simulator, hit Ctrl+C to stop...")
 
+    outputs = RegStats()
     simsched(
         itertools.chain(
             [partial(p0.wrap, t0), partial(p1.wrap, t1)],
             tso.sbctrs,
         ),
-        looper,
+        loopctr=partial(reg_count_looper, outputs, get_regs, tso),
     )
 
-    print("interrupted")
-    for state, count in sorted(outputs.items()):
-        for reg, val in state:
-            print(reg, val, end=" ")
-        print(":", count)
+    print("interrupted\n")
+    print("Observed states:")
+    print(outputs)
 
     allowed = (("p0.eax", 0), ("p1.ebx", 0))
-    if count := outputs.get(allowed, 0):
-        print(f"allowed state: {allowed} happened {count} times")
+    count = outputs.storage.get(allowed, 0)
+    print(f"allowed state: {allowed} happened {count} times")
+
+
+def iriw() -> None:
+    """IRIW example.
+
+    -------------------------------------------------------------
+    P0           | P1           | P2             | P3
+    -------------+--------------+----------------+---------------
+    MOV [x] <- 1 | MOV [y] <- 1 | MOV EAX <- [x] | MOV ECX <- [y]
+                 |              | MOV EBX <- [y] | MOV EDX <- [x]
+    -------------------------------------------------------------
+    Forbidden Final State: P2:EAX=1 and P2:EBX=0 and P3:ECX=1 and P3:EDX=0.
+    """
+    tso = TSO(nr_threads=4)
+    p0, p1, p2, p3 = tso.procs
+
+    def t0() -> SimThread:
+        """Proc 0 for `iriw` example."""
+        yield from p0.mov(Addr("x"), 1)
+
+    def t1() -> SimThread:
+        """Proc 1 for `iriw` example."""
+        yield from p1.mov(Addr("y"), 1)
+
+    def t2() -> SimThread:
+        """Proc 2 for `iriw` example."""
+        yield from p2.mov(Reg("eax"), Addr("x"))
+        yield from p2.mov(Reg("ebx"), Addr("y"))
+
+    def t3() -> SimThread:
+        """Proc 3 for `iriw` example."""
+        yield from p3.mov(Reg("ecx"), Addr("y"))
+        yield from p3.mov(Reg("edx"), Addr("x"))
+
+    def get_regs() -> RegSnapshot:
+        return (
+            ("p2.eax", p2.regs[Reg("eax")]),
+            ("p2.ebx", p2.regs[Reg("ebx")]),
+            ("p3.ecx", p3.regs[Reg("ecx")]),
+            ("p3.edx", p3.regs[Reg("edx")]),
+        )
+
+    print(iriw.__doc__)
+    print("Running the simulator, hit Ctrl+C to stop...")
+
+    outputs = RegStats()
+    simsched(
+        itertools.chain(
+            [partial(p.wrap, t) for p, t in zip(tso.procs, [t0, t1, t2, t3])],
+            tso.sbctrs,
+        ),
+        loopctr=partial(reg_count_looper, outputs, get_regs, tso),
+    )
+
+    print("interrupted\n")
+    print("Observed states:")
+    print(outputs)
+
+    forbidden = (("p2.eax", 1), ("p2.ebx", 0), ("p3.ecx", 1), ("p3.edx", 0))
+    count = outputs.storage.get(forbidden, 0)
+    print(f"forbidden state: {forbidden} happened {count} times")
 
 
 DEMOS = {
     "sb": sb,
+    "iriw": iriw,
 }
 
 
