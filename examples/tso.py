@@ -148,7 +148,6 @@ class TSO:
                     rx.consume()
                     return
 
-
     def reinit(self) -> None:
         """Reinit TSO state by freeing all written memory."""
         self.mem.clear()
@@ -157,19 +156,19 @@ class TSO:
             p.regs.clear()
 
 
-# immutable tuple of register values to keep it as a dict key
-RegSnapshot: TypeAlias = tuple[tuple[str, int], ...]
+# immutable tuple of variable values to keep it as a dict key
+Snapshot: TypeAlias = tuple[tuple[str, int], ...]
 
 
 @dataclass
-class RegStats:
-    """Class to store observed register outputs."""
+class ObservedStats:
+    """Class to store observed outputs."""
 
-    storage: MutableMapping[RegSnapshot, int] = field(
+    storage: MutableMapping[Snapshot, int] = field(
         default_factory=lambda: collections.defaultdict(int)
     )
 
-    def add(self, snapshot: RegSnapshot) -> None:
+    def add(self, snapshot: Snapshot) -> None:
         """Add observed output to the collection."""
         self.storage[snapshot] += 1
 
@@ -184,8 +183,8 @@ class RegStats:
 
 
 def reg_count_looper(
-    outputs: RegStats,
-    collector: Callable[[], RegSnapshot],
+    outputs: ObservedStats,
+    collector: Callable[[], Snapshot],
     tso: TSO,
     stats: RunStats,
 ) -> LoopController:
@@ -216,7 +215,7 @@ def sb() -> None:
     -------------------------------
     Allowed Final State: P0:EAX=0 and P1:EBX=0.
 
-    The TSO explanation:
+    x86-TSO explanation:
     - stores to x and y are buffered in both proc0 and proc1
     - both proc0 and proc1 read x and y from memory and get zeroes
     - both storebuffers flush
@@ -234,7 +233,7 @@ def sb() -> None:
         yield from p1.mov(Addr("y"), 1)
         yield from p1.mov(Reg("ebx"), Addr("x"))
 
-    def get_regs() -> RegSnapshot:
+    def get_regs() -> Snapshot:
         return (
             ("p0.eax", p0.regs[Reg("eax")]),
             ("p1.ebx", p1.regs[Reg("ebx")]),
@@ -243,7 +242,7 @@ def sb() -> None:
     print(sb.__doc__)
     print("Running the simulator, hit Ctrl+C to stop...")
 
-    outputs = RegStats()
+    outputs = ObservedStats()
     simsched(
         itertools.chain(
             [partial(p0.wrap, t0), partial(p1.wrap, t1)],
@@ -293,7 +292,7 @@ def iriw() -> None:
         yield from p3.mov(Reg("ecx"), Addr("y"))
         yield from p3.mov(Reg("edx"), Addr("x"))
 
-    def get_regs() -> RegSnapshot:
+    def get_regs() -> Snapshot:
         return (
             ("p2.eax", p2.regs[Reg("eax")]),
             ("p2.ebx", p2.regs[Reg("ebx")]),
@@ -304,7 +303,7 @@ def iriw() -> None:
     print(iriw.__doc__)
     print("Running the simulator, hit Ctrl+C to stop...")
 
-    outputs = RegStats()
+    outputs = ObservedStats()
     simsched(
         itertools.chain(
             [partial(p.wrap, t) for p, t in zip(tso.procs, [t0, t1, t2, t3])],
@@ -346,7 +345,7 @@ def n5() -> None:
         yield from p1.mov(Addr("x"), 2)
         yield from p1.mov(Reg("ebx"), Addr("x"))
 
-    def get_regs() -> RegSnapshot:
+    def get_regs() -> Snapshot:
         return (
             ("p0.eax", p0.regs[Reg("eax")]),
             ("p1.ebx", p1.regs[Reg("ebx")]),
@@ -355,7 +354,7 @@ def n5() -> None:
     print(n5.__doc__)
     print("Running the simulator, hit Ctrl+C to stop...")
 
-    outputs = RegStats()
+    outputs = ObservedStats()
     simsched(
         itertools.chain(
             [partial(p.wrap, t) for p, t in zip(tso.procs, [t0, t1])],
@@ -373,9 +372,71 @@ def n5() -> None:
     print(f"forbidden state: {forbidden} happened {count} times")
 
 
+def n6() -> None:
+    """n6 example.
+
+    -----------------------------
+    P0             | P1
+    ---------------+-------------
+    MOV [x] <- 1   | MOV [y] <- 2
+    MOV EAX <- [x] | MOV [x] <- 2
+    MOV EBX <- [y] |
+    -----------------------------
+    Allowed Final State: P0:EAX=1 and P0:EBX=0 and [x]=1
+
+    x86-TSO explanation:
+    - all 3 stores are buffered
+    - P0 reads [x] from its own store buffer and gets 1 in EAX
+    - P0 reads [y] from the memory and gets 0 in EBX
+    - P1 flushes his store buffer
+    - P0 finally flushes his store buffer, [x] = 1
+    """
+    tso = TSO(nr_threads=2)
+    p0, p1 = tso.procs
+
+    def t0() -> SimThread:
+        """Proc 0 for `n6` example."""
+        yield from p0.mov(Addr("x"), 1)
+        yield from p0.mov(Reg("eax"), Addr("x"))
+        yield from p0.mov(Reg("ebx"), Addr("y"))
+
+    def t1() -> SimThread:
+        """Proc 1 for `n6` example."""
+        yield from p1.mov(Addr("y"), 2)
+        yield from p1.mov(Addr("x"), 2)
+
+    def get_snap() -> Snapshot:
+        return (
+            ("p0.eax", p0.regs[Reg("eax")]),
+            ("p0.ebx", p0.regs[Reg("ebx")]),
+            ("[x]", tso.mem[Addr("x")]),
+        )
+
+    print(n6.__doc__)
+    print("Running the simulator, hit Ctrl+C to stop...")
+
+    outputs = ObservedStats()
+    simsched(
+        itertools.chain(
+            [partial(p.wrap, t) for p, t in zip(tso.procs, [t0, t1])],
+            tso.sbctrs,
+        ),
+        loopctr=partial(reg_count_looper, outputs, get_snap, tso),
+    )
+
+    print("interrupted\n")
+    print("Observed states:")
+    print(outputs)
+
+    allowed = (("p0.eax", 1), ("p0.ebx", 0), ("[x]", 1))
+    count = outputs.storage.get(allowed, 0)
+    print(f"allowed state: {allowed} happened {count} times")
+
+
 DEMOS = {
     "sb": sb,
     "iriw": iriw,
+    "n6": n6,
     "n5": n5,
 }
 
