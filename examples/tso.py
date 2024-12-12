@@ -437,6 +437,163 @@ class N4bDemo:
         return (("p0.eax", 2), ("p1.ecx", 1)), False
 
 
+class Ex_8_1_Demo:
+    """Example 8-1.
+
+    Stores are not reoredered with other stores.
+
+    -----------------------------
+    P0           | P1
+    -------------+---------------
+    MOV [x] <- 1 | MOV EAX <- [y]
+    MOV [y] <- 1 | MOV EBX <- [x]
+    -------------------------------
+    Forbidden Final State: P1:EAX=1 and P1:EBX=0.
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=2)
+        p0, p1 = tso.procs
+
+        def t0() -> SimThread:
+            yield from p0.mov(Addr("x"), 1)
+            yield from p0.mov(Addr("y"), 1)
+
+        def t1() -> SimThread:
+            yield from p1.mov(Reg("eax"), Addr("y"))
+            yield from p1.mov(Reg("ebx"), Addr("x"))
+
+        def snapshot() -> Snapshot:
+            return (
+                ("p1.eax", p1.regs[Reg("eax")]),
+                ("p1.ebx", p1.regs[Reg("ebx")]),
+            )
+
+        return tso, [t0, t1], snapshot
+
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        return (("p1.eax", 1), ("p1.ebx", 0)), False
+
+
+class Ex_8_2_Demo:
+    """Example 8-2.
+
+    Stores are not reoredered with older loads.
+
+    -------------------------------
+    P0             | P1
+    ---------------+---------------
+    MOV EAX <- [x] | MOV EBX <- [y]
+    MOV [y] <- 1   | MOV [x] <- 1
+    -------------------------------
+    Forbidden Final State: P0:EAX=1 and P1:EBX=1
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=2)
+        p0, p1 = tso.procs
+
+        def t0() -> SimThread:
+            yield from p0.mov(Reg("eax"), Addr("x"))
+            yield from p0.mov(Addr("y"), 1)
+
+        def t1() -> SimThread:
+            yield from p1.mov(Reg("ebx"), Addr("y"))
+            yield from p1.mov(Addr("x"), 1)
+
+        def snapshot() -> Snapshot:
+            return (
+                ("p0.eax", p0.regs[Reg("eax")]),
+                ("p1.ebx", p1.regs[Reg("ebx")]),
+            )
+
+        return tso, [t0, t1], snapshot
+
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        return (("p0.eax", 1), ("p1.ebx", 1)), False
+
+
+class Ex_8_4_Demo:
+    """Example 8-4.
+
+    Loads are not reordered with older stores to the same location.
+
+    ---------------
+    P0
+    ---------------
+    MOV [x] <- 1
+    MOV EAX <- [x]
+    ---------------
+    Required Final State: P0:EAX=1
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=1)
+        [p0] = tso.procs
+
+        def t0() -> SimThread:
+            yield from p0.mov(Addr("x"), 1)
+            yield from p0.mov(Reg("eax"), Addr("x"))
+
+        def snapshot() -> Snapshot:
+            return (("p0.eax", p0.regs[Reg("eax")]),)
+
+        return tso, [t0], snapshot
+
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        return (("p0.eax", 0),), False
+
+
+class Ex_8_6_Demo:
+    """Example 8-6.
+
+    Stores are transitively visible.
+
+    ----------------------------------------------
+    P0           | P1             | P2
+    -------------+----------------+---------------
+    MOV [x] <- 1 | MOV EAX <- [x] | MOV EBX <- [y]
+                 | MOV [y] <- 1   | MOV ECX <- [x]
+    ----------------------------------------------
+    Forbidden Final State: P1:EAX=1 and P2:EBX=1 and P2:ECX=0
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=3)
+        p0, p1, p2 = tso.procs
+
+        def t0() -> SimThread:
+            yield from p0.mov(Addr("x"), 1)
+
+        def t1() -> SimThread:
+            yield from p1.mov(Reg("eax"), Addr("x"))
+            yield from p1.mov(Addr("y"), 1)
+
+        def t2() -> SimThread:
+            yield from p2.mov(Reg("ebx"), Addr("y"))
+            yield from p2.mov(Reg("ecx"), Addr("x"))
+
+        def snapshot() -> Snapshot:
+            return (
+                ("p1.eax", p1.regs[Reg("eax")]),
+                ("p2.ebx", p2.regs[Reg("ebx")]),
+                ("p2.ecx", p2.regs[Reg("ecx")]),
+            )
+
+        return tso, [t0, t1, t2], snapshot
+
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        return (("p1.eax", 1), ("p2.ebx", 1), ("p3.ecx", 1)), False
+
+
 def play_demo(demo: type[Demo]) -> bool:
     """Play the demo from the template."""
     # prepare the demo
@@ -474,6 +631,10 @@ DEMOS: Mapping[str, type[Demo]] = {
     "n6": N6Demo,
     "n5": N5Demo,
     "n4b": N4bDemo,
+    "ex8-1": Ex_8_1_Demo,
+    "ex8-2": Ex_8_2_Demo,
+    "ex8-4": Ex_8_4_Demo,
+    "ex8-6": Ex_8_6_Demo,
 }
 
 
