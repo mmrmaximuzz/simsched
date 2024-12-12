@@ -322,9 +322,61 @@ def iriw() -> None:
     print(f"forbidden state: {forbidden} happened {count} times")
 
 
+def n5() -> None:
+    """n5 example.
+
+    -------------------------------
+    P0             | P1
+    ---------------+---------------
+    MOV [x] <- 1   | MOV [x] <- 2
+    MOV EAX <- [x] | MOV EBX <- [x]
+    -------------------------------
+    Forbidden Final State: P0:EAX=2 and P1:EBX=1
+    """
+    tso = TSO(nr_threads=2)
+    p0, p1 = tso.procs
+
+    def t0() -> SimThread:
+        """Proc 0 for `n5` example."""
+        yield from p0.mov(Addr("x"), 1)
+        yield from p0.mov(Reg("eax"), Addr("x"))
+
+    def t1() -> SimThread:
+        """Proc 1 for `n5` example."""
+        yield from p1.mov(Addr("x"), 2)
+        yield from p1.mov(Reg("ebx"), Addr("x"))
+
+    def get_regs() -> RegSnapshot:
+        return (
+            ("p0.eax", p0.regs[Reg("eax")]),
+            ("p1.ebx", p1.regs[Reg("ebx")]),
+        )
+
+    print(n5.__doc__)
+    print("Running the simulator, hit Ctrl+C to stop...")
+
+    outputs = RegStats()
+    simsched(
+        itertools.chain(
+            [partial(p.wrap, t) for p, t in zip(tso.procs, [t0, t1])],
+            tso.sbctrs,
+        ),
+        loopctr=partial(reg_count_looper, outputs, get_regs, tso),
+    )
+
+    print("interrupted\n")
+    print("Observed states:")
+    print(outputs)
+
+    forbidden = (("p0.eax", 2), ("p1.ebx", 1))
+    count = outputs.storage.get(forbidden, 0)
+    print(f"forbidden state: {forbidden} happened {count} times")
+
+
 DEMOS = {
     "sb": sb,
     "iriw": iriw,
+    "n5": n5,
 }
 
 
