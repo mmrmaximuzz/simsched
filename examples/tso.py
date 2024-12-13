@@ -107,6 +107,10 @@ class HwThread:
                 # local operations could be done atomic
                 self.regs[reg] = val
 
+    def mfence(self) -> SimThread:
+        """Intel-like `mfence` assembly instruction."""
+        yield from cond_schedule(lambda: not self.tx.buf)
+
 
 @dataclass
 class TSO:
@@ -594,6 +598,48 @@ class Ex_8_6_Demo:
         return (("p1.eax", 1), ("p2.ebx", 1), ("p3.ecx", 1)), False
 
 
+class Amd5Demo:
+    """AMD5 example.
+
+    -------------------------------
+    P0             | P1
+    ---------------+---------------
+    MOV [x] <- 1   | MOV [y] <- 1
+    MFENCE         | MFENCE
+    MOV EAX <- [y] | MOV EBX <- [x]
+    -------------------------------
+    Forbidden Final State: P0:EAX=0 and P1:EBX=0.
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=2)
+        p0, p1 = tso.procs
+
+        def t0() -> SimThread:
+            yield from p0.mov(Addr("x"), 1)
+            yield from p0.mfence()
+            yield from p0.mov(Reg("eax"), Addr("y"))
+
+        def t1() -> SimThread:
+            yield from p1.mov(Addr("y"), 1)
+            yield from p1.mfence()
+            yield from p1.mov(Reg("ebx"), Addr("x"))
+
+        def snapshot() -> Snapshot:
+            return (
+                ("p0.eax", p0.regs[Reg("eax")]),
+                ("p1.ebx", p1.regs[Reg("ebx")]),
+            )
+
+        return tso, [t0, t1], snapshot
+
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        """The snapshot to check after the execution."""
+        return (("p0.eax", 0), ("p1.ebx", 0)), False
+
+
 def play_demo(demo: type[Demo]) -> bool:
     """Play the demo from the template."""
     # prepare the demo
@@ -635,6 +681,7 @@ DEMOS: Mapping[str, type[Demo]] = {
     "ex8-2": Ex_8_2_Demo,
     "ex8-4": Ex_8_4_Demo,
     "ex8-6": Ex_8_6_Demo,
+    "amd5": Amd5Demo,
 }
 
 
