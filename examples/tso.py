@@ -71,6 +71,16 @@ class HwThread:
         yield from t()
         yield from self.tx.send(None)
 
+    def _lookup(self, addr: Addr) -> int:
+        """Get the value by addr."""
+        # first lookup the newest store in the local storebuffer
+        for a, val in reversed(self.tx.buf):
+            if addr == a:
+                return val
+
+        # if not in the storebuffer, then lookup the memory
+        return self.mem[addr]
+
     def mov(self, dst: Addr | Reg, src: Addr | Reg | int) -> SimThread:
         """Intel-like x86 `mov` assembly instruction."""
         match (dst, src):
@@ -89,15 +99,7 @@ class HwThread:
             case (Reg() as reg, Addr() as addr):
                 # load operations are allowed only when memory is not locked
                 yield from cond_schedule(lambda: not self.lock.locked)
-
-                # first lookup the newest store in the local storebuffer
-                for a, val in reversed(self.tx.buf):
-                    if addr == a:
-                        self.regs[reg] = val
-                        return
-
-                # if not in the storebuffer, then lookup the memory
-                self.regs[reg] = self.mem[addr]
+                self.regs[reg] = self._lookup(addr)
 
             case (Reg() as dstreg, Reg() as srcreg):
                 # local operations could be done atomic
@@ -110,6 +112,35 @@ class HwThread:
     def mfence(self) -> SimThread:
         """Intel-like `mfence` assembly instruction."""
         yield from cond_schedule(lambda: not self.tx.buf)
+
+    def xchg(self, dst: Addr | Reg, src: Addr | Reg) -> SimThread:
+        """Intel-like x86 `xchg` assembly instruction."""
+        match (dst, src):
+            case (Addr(), Addr()):
+                raise ValueError("x86 does not allow `xchg` from mem to mem")
+
+            case (Addr() as a, Reg() as r) | (Reg() as r, Addr() as a):
+                # xchg is implicitly locked
+                yield from self.lock.lock(owner=self)
+
+                # get both values
+                aval = self._lookup(a)
+                rval = self.regs[r]
+
+                # set value to register immediately
+                self.regs[r] = aval
+
+                # set value to memory through store buffer
+                yield from self.tx.send((a, rval))
+
+                # flush the buffer and unlock
+                yield from self.mfence()
+                yield from self.lock.unlock()
+
+            case (Reg() as dstreg, Reg() as srcreg):
+                # local operations could be done atomic
+                x, y = self.regs[dstreg], self.regs[srcreg]
+                self.regs[dstreg], self.regs[srcreg] = y, x
 
 
 @dataclass
@@ -129,10 +160,11 @@ class TSO:
         self.procs = []
         for _ in range(nr_threads):
             tx, rx = create_channel()
-            self.sbctrs.append(partial(self.storebuffer, rx))
-            self.procs.append(HwThread(self.mem, self.lock, tx))
+            proc = HwThread(self.mem, self.lock, tx)
+            self.procs.append(proc)
+            self.sbctrs.append(partial(self.storebuffer, rx, proc))
 
-    def storebuffer(self, rx: RxChannel) -> SimThread:
+    def storebuffer(self, rx: RxChannel, proc: HwThread) -> SimThread:
         """Pseudo-thread for flushing store buffer."""
         # memory store instruction or finish signal
         cell: Cell[tuple[Addr, int] | None] = Cell(None)
@@ -144,7 +176,9 @@ class TSO:
             match cell.val:
                 case (addr, value):
                     # can flush values only when the memory is not locked
-                    yield from cond_schedule(lambda: not self.lock.locked)
+                    yield from cond_schedule(
+                        lambda: not self.lock.locked or self.lock.owner is proc
+                    )
                     self.mem[addr] = value
                     rx.consume()  # now the value is flushed, we can remove it
                 case None:
@@ -598,6 +632,49 @@ class Ex_8_6_Demo:
         return (("p1.eax", 1), ("p2.ebx", 1), ("p3.ecx", 1)), False
 
 
+class Ex_8_9_Demo:
+    """Example 8-9.
+
+    Loads are not reordered with locks.
+
+    ---------------------------------
+    P0              | P1
+    ----------------+----------------
+    XCHG [x] <- EAX | XCHG [y] <- ECX
+    MOV  EBX <- [y] | MOV  EDX <- [x]
+    ---------------------------------
+    Initial state: P0:EAX=1 and P1:ECX=1
+    Forbidden Final State: P0:EBX=0 and P1:EDX=0
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=2)
+        p0, p1 = tso.procs
+
+        def t0() -> SimThread:
+            p0.regs[Reg("eax")] = 1  # initialize
+            yield from p0.xchg(Addr("x"), Reg("eax"))
+            yield from p0.mov(Reg("ebx"), Addr("y"))
+
+        def t1() -> SimThread:
+            p1.regs[Reg("ecx")] = 1  # initialize
+            yield from p1.xchg(Addr("y"), Reg("ecx"))
+            yield from p1.mov(Reg("edx"), Addr("x"))
+
+        def snapshot() -> Snapshot:
+            return (
+                ("p0.ebx", p0.regs[Reg("ebx")]),
+                ("p1.edx", p1.regs[Reg("edx")]),
+            )
+
+        return tso, [t0, t1], snapshot
+
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        return (("p0.ebx", 0), ("p1.edx", 0)), False
+
+
 class Amd5Demo:
     """AMD5 example.
 
@@ -681,6 +758,7 @@ DEMOS: Mapping[str, type[Demo]] = {
     "ex8-2": Ex_8_2_Demo,
     "ex8-4": Ex_8_4_Demo,
     "ex8-6": Ex_8_6_Demo,
+    "ex8-9": Ex_8_9_Demo,
     "amd5": Amd5Demo,
 }
 
