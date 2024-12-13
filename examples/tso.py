@@ -675,6 +675,48 @@ class Ex_8_9_Demo:
         return (("p0.ebx", 0), ("p1.edx", 0)), False
 
 
+class Ex_8_10_Demo:
+    """Example 8-0.
+
+    Stores are not reordered with locks.
+
+    ---------------------------------
+    P0              | P1
+    ----------------+----------------
+    XCHG [x] <- EAX | MOV EBX <- [y]
+    MOV  [y] <- 1   | MOV ECX <- [x]
+    ---------------------------------
+    Initial state: P0:EAX=1
+    Forbidden Final State: P1:EBX=1 and P1:ECX=0
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=2)
+        p0, p1 = tso.procs
+
+        def t0() -> SimThread:
+            p0.regs[Reg("eax")] = 1  # initialize
+            yield from p0.xchg(Addr("x"), Reg("eax"))
+            yield from p0.mov(Addr("y"), 1)
+
+        def t1() -> SimThread:
+            yield from p1.mov(Reg("ebx"), Addr("y"))
+            yield from p1.mov(Reg("ecx"), Addr("x"))
+
+        def snapshot() -> Snapshot:
+            return (
+                ("p1.ebx", p1.regs[Reg("ebx")]),
+                ("p1.ecx", p1.regs[Reg("ecx")]),
+            )
+
+        return tso, [t0, t1], snapshot
+
+    @staticmethod
+    def target() -> tuple[Snapshot, bool]:
+        return (("p1.ebx", 1), ("p1.ecx", 0)), False
+
+
 class Amd5Demo:
     """AMD5 example.
 
@@ -759,6 +801,7 @@ DEMOS: Mapping[str, type[Demo]] = {
     "ex8-4": Ex_8_4_Demo,
     "ex8-6": Ex_8_6_Demo,
     "ex8-9": Ex_8_9_Demo,
+    "ex8-10": Ex_8_10_Demo,
     "amd5": Amd5Demo,
 }
 
