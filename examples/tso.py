@@ -850,14 +850,11 @@ def main() -> None:
             case ["--test"]:
                 success = test()
             case [name]:
-                if name not in DEMOS:
-                    raise NotImplementedError(name)
-
                 success = play_demo(DEMOS[name])
             case _:
                 raise ValueError
-    except NotImplementedError as nie:
-        print(f"{nie.args[0]} not supported, select from ({'|'.join(DEMOS)})")
+    except KeyError:
+        print(f"demo not found, select from ({'|'.join(DEMOS)})")
         sys.exit(1)
     except ValueError:
         print(f"usage: {prog} ({'|'.join(DEMOS)})")
