@@ -38,11 +38,13 @@ class Mutex:
 
     locked: bool = False
     label: str | None = None
+    owner: Any = None
 
-    def lock(self) -> SimThread:
+    def lock(self, *, owner: Any = None) -> SimThread:
         """Try to aquire the lock."""
         yield from cond_schedule(lambda: not self.locked)
         self.locked = True
+        self.owner = owner
 
     def unlock(self) -> SimThread:
         """Release the lock and yield the execution.
@@ -53,6 +55,7 @@ class Mutex:
             raise RuntimeError("trying to unlock non-locked mutex")
 
         self.locked = False
+        self.owner = None
         yield from schedule()
 
 

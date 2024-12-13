@@ -25,15 +25,16 @@ def test_mutex_single_lock():
 
     def thread() -> SimThread:
         """Simulate just one lock operation."""
-        yield from mtx.lock()
+        yield from mtx.lock(owner=thread)
 
     assert run([thread]) == SimOk(), "must not deadlock"
     assert mtx.locked, "must be locked"
+    assert mtx.owner is thread, "must keep the owner"
 
 
 def test_mutex_single_unlock():
     """Single unlock must work."""
-    mtx = Mutex(locked=True)
+    mtx = Mutex(locked=True, owner="myself")
 
     def thread() -> SimThread:
         """Simulate just one unlock operation."""
@@ -41,6 +42,7 @@ def test_mutex_single_unlock():
 
     assert run([thread]) == SimOk(), "must not deadlock"
     assert not mtx.locked, "must be unlocked"
+    assert mtx.owner is None, "must discard the owner value on unlock"
 
 
 def test_mutex_lock_unlock():
@@ -49,11 +51,12 @@ def test_mutex_lock_unlock():
 
     def thread() -> SimThread:
         """Simulate just one lock/unlock sequence."""
-        yield from mtx.lock()
+        yield from mtx.lock(owner=thread)
         yield from mtx.unlock()
 
     assert run([thread]) == SimOk(), "must not deadlock"
     assert not mtx.locked, "must be unlocked"
+    assert mtx.owner is None, "must have no owner"
 
 
 def test_mutex_self_deadlock():
@@ -89,7 +92,7 @@ def test_mutex_counter_data_race():
 
 def test_mutex_unlock_when_not_locked():
     """Must raise panic when unlocking free mutex."""
-    mtx = Mutex()
+    mtx = Mutex(owner=100)
 
     def thread() -> SimThread:
         """Simulate self-deadlock."""
@@ -99,6 +102,7 @@ def test_mutex_unlock_when_not_locked():
     assert isinstance(res, SimPanic), "must got PANIC"
     assert isinstance(res.e, RuntimeError), "must get exact type"
     assert not mtx.locked, "must remain unlocked"
+    assert mtx.owner == 100, "must keep the owner"
 
 
 def test_channel_send():
