@@ -144,6 +144,16 @@ class Processor:
                 x, y = self.regs[dstreg], self.regs[srcreg]
                 self.regs[dstreg], self.regs[srcreg] = y, x
 
+    def inc(self, location: Addr) -> SimThread:
+        """Non-atomic memory increment."""
+        assert Reg("tmp") not in self.regs, "sanity check"
+
+        yield from self.mov(Reg("tmp"), location)
+        self.regs[Reg("tmp")] += 1
+        yield from self.mov(location, Reg("tmp"))
+
+        self.regs.pop(Reg("tmp"))  # cleanup
+
 
 @dataclass
 class TSO:
@@ -773,6 +783,146 @@ class Amd5Demo:
         return (("p0.eax", 0), ("p1.ebx", 0)), False
 
 
+class PetersonMutex:
+    """Classic example of concurrent mutex algorithm.
+
+    https://en.wikipedia.org/wiki/Peterson's_algorithm
+    """
+
+    @staticmethod
+    def lock(tid: int, p: Processor, use_mb: bool) -> SimThread:
+        me = tid
+        other = 1 - tid
+        yield from p.mov(Addr(f"f{me}"), 1)
+        yield from p.mov(Addr("turn"), other)
+        if use_mb:
+            yield from p.mfence()
+
+        while True:
+            yield from p.mov(Reg("eax"), Addr(f"f{other}"))
+            yield from p.mov(Reg("ebx"), Addr("turn"))
+            if not (p.regs[Reg("eax")] and p.regs[Reg("ebx")] == other):
+                return
+
+    @staticmethod
+    def unlock(tid: int, p: Processor) -> SimThread:
+        me = tid
+        yield from p.mov(Addr(f"f{me}"), 0)
+
+
+class PetersonLockDemo:
+    """Peterson's locking algorithm example.
+
+    This demo shows that naive implementation of Peterson's algorithm is broken
+    on x86* due to store buffering (non-sequentially consistent memory writes).
+
+    --------------------------------------------------------
+    P0                           | P1
+    -----------------------------+--------------------------
+    ; lock                       | ; lock
+    MOV [f0]   <- True           | MOV [f1]   <- True
+    MOV [turn] <- 1              | MOV [turn] <- 0
+    while True:                  | while True:
+        MOV EAX <- [f1]          |   MOV EAX <- [f0]
+        MOV EBX <- [turn]        |   MOV EBX <- [turn]
+        if not (EAX and EBX==1): |   if not (EAX and EBX==0):
+          break                  |     break
+                                 |
+    ; critsect                   | ; critsect
+    INC [counter]                | INC [counter]
+                                 |
+    ; unlock                     | ; unlock
+    MOV [f0] <- False            | MOV [f1] <- False
+    -----------------------------------------------------
+    Allowed Final State: [counter]=1.
+
+    x86-TSO explanation:
+    - all locking stores are buffered in both P0 and P1
+    - P0 reads [f1] from memory (gets 0)
+    - P1 reads [f0] from memory (gets 0)
+    - (at any time after this point the buffs are flushed, but it is too late)
+    - both conditions are true, break the loop
+    - both threads are in critical section, data race over [counter]
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=2)
+
+        def t0(p: Processor) -> SimThread:
+            yield from PetersonMutex.lock(0, p, use_mb=False)
+            yield from p.inc(Addr("counter"))
+            yield from PetersonMutex.unlock(0, p)
+
+        def t1(p: Processor) -> SimThread:
+            yield from PetersonMutex.lock(1, p, use_mb=False)
+            yield from p.inc(Addr("counter"))
+            yield from PetersonMutex.unlock(1, p)
+
+        def snapshot() -> Snapshot:
+            return (tso.mem[Addr("counter")],)
+
+        return tso, [t0, t1], snapshot
+
+    @staticmethod
+    def target() -> Target:
+        """The snapshot to check after the execution."""
+        return (("[counter]", 1),), True
+
+
+class PetersonLockFixedDemo:
+    """Peterson's locking algorithm example (fixed).
+
+    This demo shows that inserting `mfence` on x86 restores sequential
+    consistency for store operations, making Peterson's algorithm correct.
+
+    -----------------------------------------------------------
+    P0                           | P1
+    -----------------------------+-----------------------------
+    ; lock                       | ; lock
+    MOV [f0]   <- True           | MOV [f1]   <- True
+    MOV [turn] <- 1              | MOV [turn] <- 0
+    MFENCE ; <<<============ FIX | MFENCE ; <<<============ FIX
+    while True:                  | while True:
+        MOV EAX <- [f1]          |     MOV EAX <- [f0]
+        MOV EBX <- [turn]        |     MOV EBX <- [turn]
+        if not (EAX and EBX==1): |     if not (EAX and EBX==0):
+          break                  |         break
+                                 |
+    ; critsect                   | ; critsect
+    INC [counter]                | INC [counter]
+                                 |
+    ; unlock                     | ; unlock
+    MOV [f0] <- False            | MOV [f1] <- False
+    ------------------------------------------------------------
+    Forbidden Final State: [counter]=1.
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        tso = TSO(nr_threads=2)
+
+        def t0(p: Processor) -> SimThread:
+            yield from PetersonMutex.lock(0, p, use_mb=True)
+            yield from p.inc(Addr("counter"))
+            yield from PetersonMutex.unlock(0, p)
+
+        def t1(p: Processor) -> SimThread:
+            yield from PetersonMutex.lock(1, p, use_mb=True)
+            yield from p.inc(Addr("counter"))
+            yield from PetersonMutex.unlock(1, p)
+
+        def snapshot() -> Snapshot:
+            return (tso.mem[Addr("counter")],)
+
+        return tso, [t0, t1], snapshot
+
+    @staticmethod
+    def target() -> Target:
+        """The snapshot to check after the execution."""
+        return (("[counter]", 1),), False
+
+
 def play_demo(demo: type[Demo], *, iters: int = 0) -> bool:
     """Play the demo from the template."""
     # prepare the demo
@@ -809,6 +959,7 @@ def play_demo(demo: type[Demo], *, iters: int = 0) -> bool:
 
 
 DEMOS: Mapping[str, type[Demo]] = {
+    # demos from the original paper
     "sb": SbDemo,
     "iriw": IriwDemo,
     "n6": N6Demo,
@@ -821,6 +972,9 @@ DEMOS: Mapping[str, type[Demo]] = {
     "ex8-9": Ex_8_9_Demo,
     "ex8-10": Ex_8_10_Demo,
     "amd5": Amd5Demo,
+    # other demos
+    "peterson": PetersonLockDemo,
+    "peterson-fix": PetersonLockFixedDemo,
 }
 
 
