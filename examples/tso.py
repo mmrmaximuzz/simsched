@@ -30,13 +30,13 @@ https://www.cl.cam.ac.uk/~pes20/weakmemory/cacm.pdf
 
 import collections
 import contextlib
-import sys
 import itertools
+import sys
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from functools import partial
 from io import StringIO
-from typing import Callable, Mapping, Protocol, TypeAlias
+from typing import Callable, Mapping, Protocol, Self, TypeAlias
 
 from simsched.core import SimThread, cond_schedule
 from simsched.engine import SimOk, SimThreadConstructor
@@ -60,7 +60,7 @@ Registers: TypeAlias = MutableMapping[Reg, int]
 
 
 @dataclass
-class HwThread:
+class Processor:
     """Single execution unit in the TSO model."""
 
     mem: Memory
@@ -68,9 +68,9 @@ class HwThread:
     tx: TxChannel
     regs: Registers = field(default_factory=dict)
 
-    def wrap(self, t: SimThreadConstructor) -> SimThread:
-        """Wrap the thread with closing storebuffer thread."""
-        yield from t()
+    def wrap(self, t: Callable[[Self], SimThread]) -> SimThread:
+        """Wrap the program with closing storebuffer thread."""
+        yield from t(self)
         yield from self.tx.send(None)
 
     def _lookup(self, addr: Addr) -> int:
@@ -152,7 +152,7 @@ class TSO:
     mem: Memory
     lock: Mutex
     sbctrs: list[SimThreadConstructor]
-    procs: list[HwThread]
+    procs: list[Processor]
 
     def __init__(self, *, nr_threads: int) -> None:
         """Class constructor."""
@@ -162,11 +162,11 @@ class TSO:
         self.procs = []
         for _ in range(nr_threads):
             tx, rx = create_channel()
-            proc = HwThread(self.mem, self.lock, tx)
+            proc = Processor(self.mem, self.lock, tx)
             self.procs.append(proc)
             self.sbctrs.append(partial(self.storebuffer, rx, proc))
 
-    def storebuffer(self, rx: RxChannel, proc: HwThread) -> SimThread:
+    def storebuffer(self, rx: RxChannel, proc: Processor) -> SimThread:
         """Pseudo-thread for flushing store buffer."""
         # memory store instruction or finish signal
         cell: Cell[tuple[Addr, int] | None] = Cell(None)
@@ -249,7 +249,8 @@ def reg_count_looper(
         yield  # next run
 
 
-Config: TypeAlias = tuple[TSO, list[SimThreadConstructor], SnapshotCollector]
+Prog: TypeAlias = Callable[[Processor], SimThread]
+Config: TypeAlias = tuple[TSO, list[Prog], SnapshotCollector]
 
 
 class Demo(Protocol):
@@ -290,13 +291,13 @@ class SbDemo:
         tso = TSO(nr_threads=2)
         p0, p1 = tso.procs
 
-        def t0() -> SimThread:
-            yield from p0.mov(Addr("x"), 1)
-            yield from p0.mov(Reg("eax"), Addr("y"))
+        def t0(p: Processor) -> SimThread:
+            yield from p.mov(Addr("x"), 1)
+            yield from p.mov(Reg("eax"), Addr("y"))
 
-        def t1() -> SimThread:
-            yield from p1.mov(Addr("y"), 1)
-            yield from p1.mov(Reg("ebx"), Addr("x"))
+        def t1(p: Processor) -> SimThread:
+            yield from p.mov(Addr("y"), 1)
+            yield from p.mov(Reg("ebx"), Addr("x"))
 
         def snapshot() -> Snapshot:
             return (
@@ -327,21 +328,21 @@ class IriwDemo:
     @staticmethod
     def configure() -> Config:
         tso = TSO(nr_threads=4)
-        p0, p1, p2, p3 = tso.procs
+        _, _, p2, p3 = tso.procs
 
-        def t0() -> SimThread:
-            yield from p0.mov(Addr("x"), 1)
+        def t0(p: Processor) -> SimThread:
+            yield from p.mov(Addr("x"), 1)
 
-        def t1() -> SimThread:
-            yield from p1.mov(Addr("y"), 1)
+        def t1(p: Processor) -> SimThread:
+            yield from p.mov(Addr("y"), 1)
 
-        def t2() -> SimThread:
-            yield from p2.mov(Reg("eax"), Addr("x"))
-            yield from p2.mov(Reg("ebx"), Addr("y"))
+        def t2(p: Processor) -> SimThread:
+            yield from p.mov(Reg("eax"), Addr("x"))
+            yield from p.mov(Reg("ebx"), Addr("y"))
 
-        def t3() -> SimThread:
-            yield from p3.mov(Reg("ecx"), Addr("y"))
-            yield from p3.mov(Reg("edx"), Addr("x"))
+        def t3(p: Processor) -> SimThread:
+            yield from p.mov(Reg("ecx"), Addr("y"))
+            yield from p.mov(Reg("edx"), Addr("x"))
 
         def snapshot() -> Snapshot:
             return (
@@ -382,16 +383,16 @@ class N6Demo:
     @staticmethod
     def configure() -> Config:
         tso = TSO(nr_threads=2)
-        p0, p1 = tso.procs
+        p0, _ = tso.procs
 
-        def t0() -> SimThread:
-            yield from p0.mov(Addr("x"), 1)
-            yield from p0.mov(Reg("eax"), Addr("x"))
-            yield from p0.mov(Reg("ebx"), Addr("y"))
+        def t0(p: Processor) -> SimThread:
+            yield from p.mov(Addr("x"), 1)
+            yield from p.mov(Reg("eax"), Addr("x"))
+            yield from p.mov(Reg("ebx"), Addr("y"))
 
-        def t1() -> SimThread:
-            yield from p1.mov(Addr("y"), 2)
-            yield from p1.mov(Addr("x"), 2)
+        def t1(p: Processor) -> SimThread:
+            yield from p.mov(Addr("y"), 2)
+            yield from p.mov(Addr("x"), 2)
 
         def snapshot() -> Snapshot:
             return (
@@ -424,13 +425,13 @@ class N5Demo:
         tso = TSO(nr_threads=2)
         p0, p1 = tso.procs
 
-        def t0() -> SimThread:
-            yield from p0.mov(Addr("x"), 1)
-            yield from p0.mov(Reg("eax"), Addr("x"))
+        def t0(p: Processor) -> SimThread:
+            yield from p.mov(Addr("x"), 1)
+            yield from p.mov(Reg("eax"), Addr("x"))
 
-        def t1() -> SimThread:
-            yield from p1.mov(Addr("x"), 2)
-            yield from p1.mov(Reg("ebx"), Addr("x"))
+        def t1(p: Processor) -> SimThread:
+            yield from p.mov(Addr("x"), 2)
+            yield from p.mov(Reg("ebx"), Addr("x"))
 
         def snapshot() -> Snapshot:
             return (
@@ -462,13 +463,13 @@ class N4bDemo:
         tso = TSO(nr_threads=2)
         p0, p1 = tso.procs
 
-        def t0() -> SimThread:
-            yield from p0.mov(Reg("eax"), Addr("x"))
-            yield from p0.mov(Addr("x"), 1)
+        def t0(p: Processor) -> SimThread:
+            yield from p.mov(Reg("eax"), Addr("x"))
+            yield from p.mov(Addr("x"), 1)
 
-        def t1() -> SimThread:
-            yield from p1.mov(Reg("ecx"), Addr("x"))
-            yield from p1.mov(Addr("x"), 2)
+        def t1(p: Processor) -> SimThread:
+            yield from p.mov(Reg("ecx"), Addr("x"))
+            yield from p.mov(Addr("x"), 2)
 
         def snapshot() -> Snapshot:
             return (
@@ -500,15 +501,15 @@ class Ex_8_1_Demo:
     @staticmethod
     def configure() -> Config:
         tso = TSO(nr_threads=2)
-        p0, p1 = tso.procs
+        _, p1 = tso.procs
 
-        def t0() -> SimThread:
-            yield from p0.mov(Addr("x"), 1)
-            yield from p0.mov(Addr("y"), 1)
+        def t0(p: Processor) -> SimThread:
+            yield from p.mov(Addr("x"), 1)
+            yield from p.mov(Addr("y"), 1)
 
-        def t1() -> SimThread:
-            yield from p1.mov(Reg("eax"), Addr("y"))
-            yield from p1.mov(Reg("ebx"), Addr("x"))
+        def t1(p: Processor) -> SimThread:
+            yield from p.mov(Reg("eax"), Addr("y"))
+            yield from p.mov(Reg("ebx"), Addr("x"))
 
         def snapshot() -> Snapshot:
             return (
@@ -542,13 +543,13 @@ class Ex_8_2_Demo:
         tso = TSO(nr_threads=2)
         p0, p1 = tso.procs
 
-        def t0() -> SimThread:
-            yield from p0.mov(Reg("eax"), Addr("x"))
-            yield from p0.mov(Addr("y"), 1)
+        def t0(p: Processor) -> SimThread:
+            yield from p.mov(Reg("eax"), Addr("x"))
+            yield from p.mov(Addr("y"), 1)
 
-        def t1() -> SimThread:
-            yield from p1.mov(Reg("ebx"), Addr("y"))
-            yield from p1.mov(Addr("x"), 1)
+        def t1(p: Processor) -> SimThread:
+            yield from p.mov(Reg("ebx"), Addr("y"))
+            yield from p.mov(Addr("x"), 1)
 
         def snapshot() -> Snapshot:
             return (
@@ -582,9 +583,9 @@ class Ex_8_4_Demo:
         tso = TSO(nr_threads=1)
         [p0] = tso.procs
 
-        def t0() -> SimThread:
-            yield from p0.mov(Addr("x"), 1)
-            yield from p0.mov(Reg("eax"), Addr("x"))
+        def t0(p: Processor) -> SimThread:
+            yield from p.mov(Addr("x"), 1)
+            yield from p.mov(Reg("eax"), Addr("x"))
 
         def snapshot() -> Snapshot:
             return (("p0.eax", p0.regs[Reg("eax")]),)
@@ -613,18 +614,18 @@ class Ex_8_6_Demo:
     @staticmethod
     def configure() -> Config:
         tso = TSO(nr_threads=3)
-        p0, p1, p2 = tso.procs
+        _, p1, p2 = tso.procs
 
-        def t0() -> SimThread:
-            yield from p0.mov(Addr("x"), 1)
+        def t0(p: Processor) -> SimThread:
+            yield from p.mov(Addr("x"), 1)
 
-        def t1() -> SimThread:
-            yield from p1.mov(Reg("eax"), Addr("x"))
-            yield from p1.mov(Addr("y"), 1)
+        def t1(p: Processor) -> SimThread:
+            yield from p.mov(Reg("eax"), Addr("x"))
+            yield from p.mov(Addr("y"), 1)
 
-        def t2() -> SimThread:
-            yield from p2.mov(Reg("ebx"), Addr("y"))
-            yield from p2.mov(Reg("ecx"), Addr("x"))
+        def t2(p: Processor) -> SimThread:
+            yield from p.mov(Reg("ebx"), Addr("y"))
+            yield from p.mov(Reg("ecx"), Addr("x"))
 
         def snapshot() -> Snapshot:
             return (
@@ -660,15 +661,15 @@ class Ex_8_9_Demo:
         tso = TSO(nr_threads=2)
         p0, p1 = tso.procs
 
-        def t0() -> SimThread:
-            p0.regs[Reg("eax")] = 1  # initialize
-            yield from p0.xchg(Addr("x"), Reg("eax"))
-            yield from p0.mov(Reg("ebx"), Addr("y"))
+        def t0(p: Processor) -> SimThread:
+            p.regs[Reg("eax")] = 1  # initialize
+            yield from p.xchg(Addr("x"), Reg("eax"))
+            yield from p.mov(Reg("ebx"), Addr("y"))
 
-        def t1() -> SimThread:
-            p1.regs[Reg("ecx")] = 1  # initialize
-            yield from p1.xchg(Addr("y"), Reg("ecx"))
-            yield from p1.mov(Reg("edx"), Addr("x"))
+        def t1(p: Processor) -> SimThread:
+            p.regs[Reg("ecx")] = 1  # initialize
+            yield from p.xchg(Addr("y"), Reg("ecx"))
+            yield from p.mov(Reg("edx"), Addr("x"))
 
         def snapshot() -> Snapshot:
             return (
@@ -701,16 +702,16 @@ class Ex_8_10_Demo:
     @staticmethod
     def configure() -> Config:
         tso = TSO(nr_threads=2)
-        p0, p1 = tso.procs
+        _, p1 = tso.procs
 
-        def t0() -> SimThread:
-            p0.regs[Reg("eax")] = 1  # initialize
-            yield from p0.xchg(Addr("x"), Reg("eax"))
-            yield from p0.mov(Addr("y"), 1)
+        def t0(p: Processor) -> SimThread:
+            p.regs[Reg("eax")] = 1  # initialize
+            yield from p.xchg(Addr("x"), Reg("eax"))
+            yield from p.mov(Addr("y"), 1)
 
-        def t1() -> SimThread:
-            yield from p1.mov(Reg("ebx"), Addr("y"))
-            yield from p1.mov(Reg("ecx"), Addr("x"))
+        def t1(p: Processor) -> SimThread:
+            yield from p.mov(Reg("ebx"), Addr("y"))
+            yield from p.mov(Reg("ecx"), Addr("x"))
 
         def snapshot() -> Snapshot:
             return (
@@ -743,15 +744,15 @@ class Amd5Demo:
         tso = TSO(nr_threads=2)
         p0, p1 = tso.procs
 
-        def t0() -> SimThread:
-            yield from p0.mov(Addr("x"), 1)
-            yield from p0.mfence()
-            yield from p0.mov(Reg("eax"), Addr("y"))
+        def t0(p: Processor) -> SimThread:
+            yield from p.mov(Addr("x"), 1)
+            yield from p.mfence()
+            yield from p.mov(Reg("eax"), Addr("y"))
 
-        def t1() -> SimThread:
-            yield from p1.mov(Addr("y"), 1)
-            yield from p1.mfence()
-            yield from p1.mov(Reg("ebx"), Addr("x"))
+        def t1(p: Processor) -> SimThread:
+            yield from p.mov(Addr("y"), 1)
+            yield from p.mfence()
+            yield from p.mov(Reg("ebx"), Addr("x"))
 
         def snapshot() -> Snapshot:
             return (
