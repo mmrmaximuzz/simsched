@@ -154,6 +154,19 @@ class Processor:
 
         self.regs.pop(Reg("tmp"))  # cleanup
 
+    def lock_dec(self, location: Addr, ret: Cell[int]) -> SimThread:
+        """Atomic memory decrement."""
+        yield from self.lock.lock(owner=self)
+
+        value = self._lookup(location)
+        yield from self.mov(location, value - 1)
+
+        yield from self.mfence()
+        yield from self.lock.unlock()
+
+        # return the old read value
+        ret.val = value
+
 
 @dataclass
 class TSO:
@@ -163,18 +176,30 @@ class TSO:
     lock: Mutex
     sbctrs: list[SimThreadConstructor]
     procs: list[Processor]
+    defmem: Mapping[Addr, int]
 
-    def __init__(self, *, nr_threads: int) -> None:
+    def __init__(
+        self,
+        *,
+        nr_threads: int,
+        defmem: Mapping[Addr, int] = {},
+    ) -> None:
         """Class constructor."""
         self.mem = collections.defaultdict(int)
         self.lock = Mutex()
         self.sbctrs = []
         self.procs = []
+        self.defmem = defmem
+
+        # create processors and storebuffers
         for _ in range(nr_threads):
             tx, rx = create_channel()
             proc = Processor(self.mem, self.lock, tx)
             self.procs.append(proc)
             self.sbctrs.append(partial(self.storebuffer, rx, proc))
+
+        # initialize memory
+        self.mem.update(self.defmem)
 
     def storebuffer(self, rx: RxChannel, proc: Processor) -> SimThread:
         """Pseudo-thread for flushing store buffer."""
@@ -199,8 +224,9 @@ class TSO:
                     return
 
     def reinit(self) -> None:
-        """Reinit TSO state by freeing all written memory."""
-        self.mem.clear()
+        """Reinit TSO state."""
+        self.mem.clear()  # clear all state
+        self.mem.update(self.defmem)  # reinitialize
         for p in self.procs:
             assert not p.tx.buf, "must be empty when finished"
             p.regs.clear()
@@ -783,6 +809,69 @@ class Amd5Demo:
         return (("p0.eax", 0), ("p1.ebx", 0)), False
 
 
+@dataclass
+class LinuxSpinlock:
+    """Linux spinlock implementation discussed in the paper."""
+
+    addr: Addr
+
+    def lock(self, p: Processor) -> SimThread:
+        # acquire loop
+        while True:
+            ret = Cell(0)
+            yield from p.lock_dec(self.addr, ret)
+            if ret.val >= 1:
+                # was unlocked
+                return
+
+            # spin loop
+            while True:
+                yield from p.mov(Reg("ebx"), self.addr)
+                if p.regs[Reg("ebx")] > 0:
+                    # looks released, try to acquire again
+                    break
+
+    def unlock(self, p: Processor) -> SimThread:
+        # ordinary move instead of lock;mov
+        yield from p.mov(self.addr, 1)
+
+
+class LinuxSpinlockDemo:
+    """Linux spinlock demo from the paper.
+
+    On entry the address of spinlock is in register EAX and the spinlock is
+    unlocked iff its value is 1.
+
+    acquire: LOCK;DEC [EAX] ; LOCK’d decrement of [EAX]
+             JNS enter      ; branch if [EAX] was >= 1
+    spin:    CMP [EAX], 0   ; test [EAX]
+             JLE spin       ; branch if [EAX] was <= 0
+             JMP acquire    ; try again
+    enter:                  ; the critical section starts here
+    release: MOV [EAX] <- 1
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        spinaddr = Addr("spinlock")  # use global address for spinlock
+        tso = TSO(nr_threads=2, defmem={spinaddr: 1})
+        spin = LinuxSpinlock(spinaddr)
+
+        def t(p: Processor) -> SimThread:
+            yield from spin.lock(p)
+            yield from p.inc(Addr("counter"))
+            yield from spin.unlock(p)
+
+        def snapshot() -> Snapshot:
+            return (tso.mem[Addr("counter")],)
+
+        return tso, [t, t], snapshot
+
+    @staticmethod
+    def target() -> Target:
+        return (("counter", 1),), False
+
+
 class PetersonMutex:
     """Classic example of concurrent mutex algorithm.
 
@@ -972,6 +1061,7 @@ DEMOS: Mapping[str, type[Demo]] = {
     "ex8-9": Ex_8_9_Demo,
     "ex8-10": Ex_8_10_Demo,
     "amd5": Amd5Demo,
+    "linux-spin": LinuxSpinlockDemo,
     # other demos
     "peterson": PetersonLockDemo,
     "peterson-fix": PetersonLockFixedDemo,
