@@ -32,7 +32,7 @@ import collections
 import contextlib
 import itertools
 import sys
-from collections.abc import MutableMapping
+from collections.abc import Iterable, MutableMapping
 from dataclasses import dataclass, field
 from functools import partial
 from io import StringIO
@@ -197,7 +197,8 @@ class TSO:
 
 
 # immutable tuple of variable values to keep it as a dict key
-Snapshot: TypeAlias = tuple[tuple[str, int], ...]
+Snapshot: TypeAlias = tuple[int, ...]
+NamedSnapshot: TypeAlias = tuple[tuple[str, int], ...]
 SnapshotCollector = Callable[[], Snapshot]
 
 
@@ -213,11 +214,14 @@ class ObservedStats:
         """Add observed output to the collection."""
         self.storage[snapshot] += 1
 
-    def __str__(self) -> str:
+    def describe(self, inames: Iterable[str]) -> str:
         """Provide human-readable string."""
+        names = list(inames)
+
         lines = []
         for snap, count in sorted(self.storage.items()):
-            snapline = ", ".join(f"{reg} = {val}" for reg, val in snap)
+            namedsnap = zip(names, snap)
+            snapline = ", ".join(f"{name} = {val}" for name, val in namedsnap)
             lines.append(f"{snapline}: {count}")
 
         return "\n".join(lines)
@@ -251,6 +255,7 @@ def reg_count_looper(
 
 Prog: TypeAlias = Callable[[Processor], SimThread]
 Config: TypeAlias = tuple[TSO, list[Prog], SnapshotCollector]
+Target: TypeAlias = tuple[NamedSnapshot, bool]
 
 
 class Demo(Protocol):
@@ -262,8 +267,8 @@ class Demo(Protocol):
         ...
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
-        """The snapshot to check after the execution."""
+    def target() -> Target:
+        """The snapshot target to check after the execution."""
         ...
 
 
@@ -301,14 +306,14 @@ class SbDemo:
 
         def snapshot() -> Snapshot:
             return (
-                ("p0.eax", p0.regs[Reg("eax")]),
-                ("p1.ebx", p1.regs[Reg("ebx")]),
+                p0.regs[Reg("eax")],
+                p1.regs[Reg("ebx")],
             )
 
         return tso, [t0, t1], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         """The snapshot to check after the execution."""
         return (("p0.eax", 0), ("p1.ebx", 0)), True
 
@@ -346,16 +351,16 @@ class IriwDemo:
 
         def snapshot() -> Snapshot:
             return (
-                ("p2.eax", p2.regs[Reg("eax")]),
-                ("p2.ebx", p2.regs[Reg("ebx")]),
-                ("p3.ecx", p3.regs[Reg("ecx")]),
-                ("p3.edx", p3.regs[Reg("edx")]),
+                p2.regs[Reg("eax")],
+                p2.regs[Reg("ebx")],
+                p3.regs[Reg("ecx")],
+                p3.regs[Reg("edx")],
             )
 
         return tso, [t0, t1, t2, t3], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         snap = ("p2.eax", 1), ("p2.ebx", 0), ("p3.ecx", 1), ("p3.edx", 0)
         return snap, False
 
@@ -396,15 +401,15 @@ class N6Demo:
 
         def snapshot() -> Snapshot:
             return (
-                ("p0.eax", p0.regs[Reg("eax")]),
-                ("p0.ebx", p0.regs[Reg("ebx")]),
-                ("[x]", tso.mem[Addr("x")]),
+                p0.regs[Reg("eax")],
+                p0.regs[Reg("ebx")],
+                tso.mem[Addr("x")],
             )
 
         return tso, [t0, t1], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         return (("p0.eax", 1), ("p0.ebx", 0), ("[x]", 1)), True
 
 
@@ -435,14 +440,14 @@ class N5Demo:
 
         def snapshot() -> Snapshot:
             return (
-                ("p0.eax", p0.regs[Reg("eax")]),
-                ("p1.ebx", p1.regs[Reg("ebx")]),
+                p0.regs[Reg("eax")],
+                p1.regs[Reg("ebx")],
             )
 
         return tso, [t0, t1], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         return (("p0.eax", 2), ("p1.ebx", 1)), False
 
 
@@ -473,14 +478,14 @@ class N4bDemo:
 
         def snapshot() -> Snapshot:
             return (
-                ("p0.eax", p0.regs[Reg("eax")]),
-                ("p1.ecx", p1.regs[Reg("ecx")]),
+                p0.regs[Reg("eax")],
+                p1.regs[Reg("ecx")],
             )
 
         return tso, [t0, t1], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         return (("p0.eax", 2), ("p1.ecx", 1)), False
 
 
@@ -513,14 +518,14 @@ class Ex_8_1_Demo:
 
         def snapshot() -> Snapshot:
             return (
-                ("p1.eax", p1.regs[Reg("eax")]),
-                ("p1.ebx", p1.regs[Reg("ebx")]),
+                p1.regs[Reg("eax")],
+                p1.regs[Reg("ebx")],
             )
 
         return tso, [t0, t1], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         return (("p1.eax", 1), ("p1.ebx", 0)), False
 
 
@@ -553,14 +558,14 @@ class Ex_8_2_Demo:
 
         def snapshot() -> Snapshot:
             return (
-                ("p0.eax", p0.regs[Reg("eax")]),
-                ("p1.ebx", p1.regs[Reg("ebx")]),
+                p0.regs[Reg("eax")],
+                p1.regs[Reg("ebx")],
             )
 
         return tso, [t0, t1], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         return (("p0.eax", 1), ("p1.ebx", 1)), False
 
 
@@ -588,12 +593,12 @@ class Ex_8_4_Demo:
             yield from p.mov(Reg("eax"), Addr("x"))
 
         def snapshot() -> Snapshot:
-            return (("p0.eax", p0.regs[Reg("eax")]),)
+            return (p0.regs[Reg("eax")],)
 
         return tso, [t0], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         return (("p0.eax", 0),), False
 
 
@@ -629,15 +634,15 @@ class Ex_8_6_Demo:
 
         def snapshot() -> Snapshot:
             return (
-                ("p1.eax", p1.regs[Reg("eax")]),
-                ("p2.ebx", p2.regs[Reg("ebx")]),
-                ("p2.ecx", p2.regs[Reg("ecx")]),
+                p1.regs[Reg("eax")],
+                p2.regs[Reg("ebx")],
+                p2.regs[Reg("ecx")],
             )
 
         return tso, [t0, t1, t2], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         return (("p1.eax", 1), ("p2.ebx", 1), ("p2.ecx", 0)), False
 
 
@@ -673,14 +678,14 @@ class Ex_8_9_Demo:
 
         def snapshot() -> Snapshot:
             return (
-                ("p0.ebx", p0.regs[Reg("ebx")]),
-                ("p1.edx", p1.regs[Reg("edx")]),
+                p0.regs[Reg("ebx")],
+                p1.regs[Reg("edx")],
             )
 
         return tso, [t0, t1], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         return (("p0.ebx", 0), ("p1.edx", 0)), False
 
 
@@ -715,14 +720,14 @@ class Ex_8_10_Demo:
 
         def snapshot() -> Snapshot:
             return (
-                ("p1.ebx", p1.regs[Reg("ebx")]),
-                ("p1.ecx", p1.regs[Reg("ecx")]),
+                p1.regs[Reg("ebx")],
+                p1.regs[Reg("ecx")],
             )
 
         return tso, [t0, t1], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         return (("p1.ebx", 1), ("p1.ecx", 0)), False
 
 
@@ -756,14 +761,14 @@ class Amd5Demo:
 
         def snapshot() -> Snapshot:
             return (
-                ("p0.eax", p0.regs[Reg("eax")]),
-                ("p1.ebx", p1.regs[Reg("ebx")]),
+                p0.regs[Reg("eax")],
+                p1.regs[Reg("ebx")],
             )
 
         return tso, [t0, t1], snapshot
 
     @staticmethod
-    def target() -> tuple[Snapshot, bool]:
+    def target() -> Target:
         """The snapshot to check after the execution."""
         return (("p0.eax", 0), ("p1.ebx", 0)), False
 
@@ -788,12 +793,16 @@ def play_demo(demo: type[Demo], *, iters: int = 0) -> bool:
 
     print("interrupted\n")
     print(f"Observed states (total {len(outputs.storage)}):")
-    print(outputs)
+
+    # pretty print the outputs
+    target, allowed = demo.target()
+    target_name = [name for name, _ in target]
+    target_snap = tuple(snap for _, snap in target)
+    print(outputs.describe(target_name))
 
     # investigate the target snapshot
-    target, allowed = demo.target()
     status = "Allowed" if allowed else "Forbidden"
-    count = outputs.storage.get(target, 0)
+    count = outputs.storage.get(target_snap, 0)
     print(f"{status} state: {target} happened {count} times")
 
     return allowed == bool(count)
