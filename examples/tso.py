@@ -29,11 +29,13 @@ https://www.cl.cam.ac.uk/~pes20/weakmemory/cacm.pdf
 """
 
 import collections
+import contextlib
 import sys
 import itertools
 from collections.abc import MutableMapping
 from dataclasses import dataclass, field
 from functools import partial
+from io import StringIO
 from typing import Callable, Mapping, Protocol, TypeAlias
 
 from simsched.core import SimThread, cond_schedule
@@ -225,6 +227,7 @@ def reg_count_looper(
     outputs: ObservedStats,
     collector: SnapshotCollector,
     tso: TSO,
+    iters: int,
     stats: RunStats,
 ) -> LoopController:
     """Common looper for most of the TSO demos.
@@ -238,6 +241,11 @@ def reg_count_looper(
         snap = collector()
         outputs.add(snap)
         tso.reinit()  # explicit reinit
+
+        # if limit is provided, then check
+        if iters and stats.total >= iters:
+            return
+
         yield  # next run
 
 
@@ -759,7 +767,7 @@ class Amd5Demo:
         return (("p0.eax", 0), ("p1.ebx", 0)), False
 
 
-def play_demo(demo: type[Demo]) -> bool:
+def play_demo(demo: type[Demo], *, iters: int = 0) -> bool:
     """Play the demo from the template."""
     # prepare the demo
     tso, thrctrs, snapshot = demo.configure()
@@ -774,7 +782,7 @@ def play_demo(demo: type[Demo]) -> bool:
             [partial(p.wrap, t) for p, t in zip(tso.procs, thrctrs)],
             tso.sbctrs,
         ),
-        loopctr=partial(reg_count_looper, outputs, snapshot, tso),
+        loopctr=partial(reg_count_looper, outputs, snapshot, tso, iters),
     )
 
     print("interrupted\n")
@@ -806,11 +814,31 @@ DEMOS: Mapping[str, type[Demo]] = {
 }
 
 
+def test() -> bool:
+    """Helper function to run all tests for debug."""
+    for name, demo in DEMOS.items():
+        io = StringIO()
+        print(name, end=": ")
+        with contextlib.redirect_stdout(io):
+            result = play_demo(demo, iters=10000)
+
+        if result:
+            print("OK")
+        else:
+            print("FAIL")
+            print(io.getvalue())
+            return False
+
+    return True
+
+
 def main() -> None:
     """CLI entrypoint."""
     prog, *args = sys.argv
     try:
         match args:
+            case ["--test"]:
+                success = test()
             case [name]:
                 if name not in DEMOS:
                     raise NotImplementedError(name)
