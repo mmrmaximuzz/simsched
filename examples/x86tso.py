@@ -1017,6 +1017,8 @@ def play_demo(demo: type[Demo], *, iters: int = 0) -> bool:
     # prepare the demo
     tso, thrctrs, snapshot = demo.configure()
 
+    assert len(tso.procs) == len(thrctrs), "must be exact amount of threads"
+
     print(demo.__doc__)
     print("Running the simulator, hit Ctrl+C to stop...")
 
