@@ -638,7 +638,7 @@ class Ex_8_6_Demo:
 
     @staticmethod
     def target() -> tuple[Snapshot, bool]:
-        return (("p1.eax", 1), ("p2.ebx", 1), ("p3.ecx", 1)), False
+        return (("p1.eax", 1), ("p2.ebx", 1), ("p2.ecx", 0)), False
 
 
 class Ex_8_9_Demo:
