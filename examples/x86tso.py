@@ -39,8 +39,8 @@ from functools import partial
 from io import StringIO
 from typing import Callable, Mapping, Protocol, Self, TypeAlias
 
-from simsched.core import SimThread, cond_schedule
-from simsched.engine import SimOk, SimThreadConstructor
+from simsched.core import SimThread, cond_schedule, schedule
+from simsched.engine import SimThreadConstructor
 from simsched.lib import Cell, Mutex, RxChannel, TxChannel, create_channel
 from simsched.runner import LoopController, RunStats, simsched
 
@@ -293,8 +293,6 @@ def reg_count_looper(
     """
     yield  # first run
     while True:
-        assert stats.last == SimOk(), stats.last
-
         snap = collector()
         outputs.add(snap)
         tso.reinit()  # explicit reinit
@@ -946,6 +944,154 @@ class LinuxTicketedSpinlockDemo:
         return (("counter", 1),), False
 
 
+@dataclass
+class JVMParker:
+    """Skeleton of Parker class from JVM."""
+
+    counter: Addr
+    mutex: Mutex
+    cond: Addr
+
+    def _pthread_mutex_lock(self) -> SimThread:
+        yield from self.mutex.lock()
+
+    def _pthread_mutex_trylock(self, succ: Cell[bool]) -> SimThread:
+        yield from schedule()
+        if not self.mutex.locked:
+            self.mutex.locked = True
+            succ.val = True
+        else:
+            succ.val = False
+
+    def _pthread_mutex_unlock(self, p: Processor) -> SimThread:
+        # emulate release barrier with mfence
+        yield from p.mfence()
+        yield from self.mutex.unlock()
+
+    def _pthread_cond_wait(self, p: Processor) -> SimThread:
+        # do all this atomically
+        self.mutex.locked = False
+
+        p.mem[self.cond] = 1  # ready to get a signal
+        yield from cond_schedule(
+            lambda: not self.mutex.locked and p.mem[self.cond] == 2
+        )
+
+        p.mem[self.cond] = 0
+        self.mutex.locked = True
+
+    def _pthread_cond_signal(self, p: Processor) -> SimThread:
+        yield from schedule()
+        # emulate signal send as instant write to some addr
+        if p.mem[self.cond] == 1:
+            # if ready, deliver the signal, lost otherwise
+            p.mem[self.cond] = 2
+
+        yield from schedule()
+
+    def park(self, p: Processor, *, bugged: bool) -> SimThread:
+        yield from p.mov(Reg("counter"), self.counter)
+        if p.regs[Reg("counter")] > 0:
+            # fastpath
+            yield from p.mov(self.counter, 0)
+            if not bugged:
+                # buggy version is missing mfence here
+                yield from p.mfence()
+
+            return
+
+        succ = Cell(False)
+        yield from self._pthread_mutex_trylock(succ)
+        if not succ.val:
+            return
+
+        yield from p.mov(Reg("counter"), self.counter)
+        if p.regs[Reg("counter")] > 0:
+            # no wait needed
+            yield from p.mov(self.counter, 0)
+            yield from self._pthread_mutex_unlock(p)
+            return
+
+        yield from self._pthread_cond_wait(p)
+        yield from p.mov(self.counter, 0)
+        yield from self._pthread_mutex_unlock(p)
+
+    def unpark(self, p: Processor) -> SimThread:
+        yield from self._pthread_mutex_lock()
+        yield from p.mov(Reg("unparkcounter"), self.counter)
+        yield from p.mov(self.counter, 1)
+        yield from self._pthread_mutex_unlock(p)
+        if p.regs[Reg("unparkcounter")] < 1:
+            yield from self._pthread_cond_signal(p)
+
+
+class JVMParkerBugDemo:
+    """HotSpot JVM Parker bug.
+
+    See the ecoop10 paper for the full explanation.
+    https://www.cl.cam.ac.uk/~pes20/weakmemory/ecoop10.pdf
+
+    This implementation lacks any sync instruction in Parker::park fastpath and
+    thus have a triangular race (see the paper). It leads to a lost
+    Parker::unpark signal and thread hangup.
+    """
+
+    @staticmethod
+    def configure(bugged: bool = True) -> Config:
+        tso = TSO(nr_threads=2)
+        pk = JVMParker(Addr("counter"), Mutex(), Addr("condvar"))
+
+        def waiter(p: Processor):
+            # init local var
+            p.regs[Reg("wakeup")] = 0
+
+            while True:
+                yield from p.mov(Reg("eax"), Addr("sh1"))
+                if p.regs[Reg("eax")] == 1:
+                    break
+
+                yield from pk.park(p, bugged=bugged)
+
+            p.regs[Reg("wakeup")] = 1  # may lose signal and not get here
+
+        def provider(p: Processor):
+            # prepare the initial state, internal counter should be 1
+            yield from pk.unpark(p)
+
+            # reproduce lost wakeup
+            yield from p.mov(Addr("sh1"), 1)
+            yield from p.mfence()
+            yield from pk.unpark(p)
+
+        def snapshot() -> Snapshot:
+            return (tso.procs[0].regs[Reg("wakeup")],)
+
+        return tso, [waiter, provider], snapshot
+
+    @staticmethod
+    def target() -> Target:
+        return (("wakeup", 0),), True
+
+
+class JVMParkerBugFixedDemo:
+    """HotSpot JVM Parker bug (fixed).
+
+    See the ecoop10 paper for the full explanation.
+    https://www.cl.cam.ac.uk/~pes20/weakmemory/ecoop10.pdf
+
+    This implementation has the `mfence` instruction in fastpath so it does not
+    suffer from lost signals as the original one.
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        return JVMParkerBugDemo.configure(bugged=False)
+
+    @staticmethod
+    def target() -> Target:
+        return (("break1", 0),), False
+
+
 class PetersonMutex:
     """Classic example of concurrent mutex algorithm.
 
@@ -1139,6 +1285,8 @@ DEMOS: Mapping[str, type[Demo]] = {
     "amd5": Amd5Demo,
     "linux-spin": LinuxSpinlockDemo,
     "linux-spin-ticket": LinuxTicketedSpinlockDemo,
+    "jvm-parker": JVMParkerBugDemo,
+    "jvm-parker-fix": JVMParkerBugFixedDemo,
     # other demos
     "peterson": PetersonLockDemo,
     "peterson-fix": PetersonLockFixedDemo,
@@ -1171,20 +1319,22 @@ def demos_list() -> str:
 def main() -> None:
     """CLI entrypoint."""
     prog, *args = sys.argv
-    try:
-        match args:
-            case ["--test"]:
-                success = test()
-            case [name]:
-                success = play_demo(DEMOS[name])
-            case _:
-                raise ValueError
-    except KeyError:
-        print(f"demo not found, select from {demos_list()}")
-        sys.exit(1)
-    except ValueError:
+
+    def usage() -> None:
         print(f"usage: {prog} {demos_list()}")
-        sys.exit(1)
+
+    match args:
+        case ["--test"]:
+            success = test()
+        case [name]:
+            if name not in DEMOS:
+                usage()
+                sys.exit(1)
+
+            success = play_demo(DEMOS[name])
+        case _:
+            usage()
+            sys.exit(1)
 
     sys.exit(0 if success else 1)
 
