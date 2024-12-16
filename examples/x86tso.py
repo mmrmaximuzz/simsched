@@ -24,8 +24,9 @@ original program instructions. This demo implements x86-TSO, which is a formal
 model of execution for x86* architecture, and it tries to reproduce some of the
 common multithreading issues that could happen on this platform.
 
-The issues for this demo are deliberately taken from this must-read paper.
+The issues for this demo are deliberately taken from these must-read papers.
 https://www.cl.cam.ac.uk/~pes20/weakmemory/cacm.pdf
+https://www.cl.cam.ac.uk/~pes20/weakmemory/ecoop10.pdf
 """
 
 import collections
@@ -83,6 +84,15 @@ class Processor:
         # if not in the storebuffer, then lookup the memory
         return self.mem[addr]
 
+    def _memlock(self) -> SimThread:
+        """Lock the memory system."""
+        yield from self.lock.lock(owner=self)
+
+    def _memunlock(self) -> SimThread:
+        """Unlock the memory system."""
+        yield from self.mfence()  # flushing the self store buffer is a must
+        yield from self.lock.unlock()
+
     def mov(self, dst: Addr | Reg, src: Addr | Reg | int) -> SimThread:
         """Intel-like x86 `mov` assembly instruction."""
         match (dst, src):
@@ -123,21 +133,17 @@ class Processor:
 
             case (Addr() as a, Reg() as r) | (Reg() as r, Addr() as a):
                 # xchg is implicitly locked
-                yield from self.lock.lock(owner=self)
+                yield from self._memlock()
 
                 # get both values
                 aval = self._lookup(a)
                 rval = self.regs[r]
 
-                # set value to register immediately
+                # set value to register immediately, and send to memory
                 self.regs[r] = aval
-
-                # set value to memory through store buffer
                 yield from self.tx.send((a, rval))
 
-                # flush the buffer and unlock
-                yield from self.mfence()
-                yield from self.lock.unlock()
+                yield from self._memunlock()
 
             case (Reg() as dstreg, Reg() as srcreg):
                 # local operations could be done atomic
@@ -154,18 +160,29 @@ class Processor:
 
         self.regs.pop(Reg("tmp"))  # cleanup
 
+    def lock_xadd(self, location: Addr, reg: Reg) -> SimThread:
+        """Atomic memory addition."""
+        yield from self._memlock()
+
+        old = self._lookup(location)
+        yield from self.mov(location, old + self.regs[reg])
+
+        yield from self._memunlock()
+
+        # return the old value in the register
+        self.regs[reg] = old
+
     def lock_dec(self, location: Addr, ret: Cell[int]) -> SimThread:
         """Atomic memory decrement."""
-        yield from self.lock.lock(owner=self)
+        yield from self._memlock()
 
-        value = self._lookup(location)
-        yield from self.mov(location, value - 1)
+        old = self._lookup(location)
+        yield from self.mov(location, old - 1)
 
-        yield from self.mfence()
-        yield from self.lock.unlock()
+        yield from self._memunlock()
 
-        # return the old read value
-        ret.val = value
+        # return the old value in return value (for CMP after return)
+        ret.val = old
 
 
 @dataclass
@@ -837,12 +854,12 @@ class LinuxSpinlock:
 
 
 class LinuxSpinlockDemo:
-    """Linux spinlock demo from the paper.
+    """Linux (v2.6.24.7) spinlock demo from the paper.
 
     On entry the address of spinlock is in register EAX and the spinlock is
     unlocked iff its value is 1.
 
-    acquire: LOCK;DEC [EAX] ; LOCK’d decrement of [EAX]
+    acquire: LOCK DEC [EAX] ; LOCK’d decrement of [EAX]
              JNS enter      ; branch if [EAX] was >= 1
     spin:    CMP [EAX], 0   ; test [EAX]
              JLE spin       ; branch if [EAX] was <= 0
@@ -856,6 +873,63 @@ class LinuxSpinlockDemo:
         spinaddr = Addr("spinlock")  # use global address for spinlock
         tso = TSO(nr_threads=2, defmem={spinaddr: 1})
         spin = LinuxSpinlock(spinaddr)
+
+        def t(p: Processor) -> SimThread:
+            yield from spin.lock(p)
+            yield from p.inc(Addr("counter"))
+            yield from spin.unlock(p)
+
+        def snapshot() -> Snapshot:
+            return (tso.mem[Addr("counter")],)
+
+        return tso, [t, t], snapshot
+
+    @staticmethod
+    def target() -> Target:
+        return (("counter", 1),), False
+
+
+@dataclass
+class LinuxTicketedSpinlock:
+    """Linux ticketed spinlock implementation discussed in the paper."""
+
+    loaddr: Addr
+    hiaddr: Addr
+
+    def lock(self, p: Processor) -> SimThread:
+        yield from p.mov(Reg("ecx"), 1)
+        yield from p.lock_xadd(self.loaddr, Reg("ecx"))
+
+        # spin loop
+        while True:
+            yield from p.mov(Reg("eax"), self.hiaddr)
+            if p.regs[Reg("eax")] == p.regs[Reg("ecx")]:
+                # now it is our ticket, released
+                return
+
+    def unlock(self, p: Processor) -> SimThread:
+        # ordinary move instead of lock;mov
+        yield from p.inc(self.hiaddr)
+
+
+class LinuxTicketedSpinlockDemo:
+    """Linux (v2.6.31) ticketed spinlock demo from the paper.
+
+    acquire: MOV ECX <- 1           ; tkt := 1
+             LOCK XADD [EBX] <- ECX ; atomic (tkt := [y]
+                                    ;         [y] := tkt + 1
+                                    ;         flush local write buffer)
+    spin:    CMP [EAX], ECX         ; flag := ([x] = tkt)
+             JE enter               ; if flag then goto enter
+             JMP spin               ; goto spin
+    enter:                          ; the critical section starts here
+    release:                        ; [x] := [x] + 1
+    """
+
+    @staticmethod
+    def configure() -> Config:
+        spin = LinuxTicketedSpinlock(Addr("spinlo"), Addr("spinhi"))
+        tso = TSO(nr_threads=2)
 
         def t(p: Processor) -> SimThread:
             yield from spin.lock(p)
@@ -1050,7 +1124,7 @@ def play_demo(demo: type[Demo], *, iters: int = 0) -> bool:
 
 
 DEMOS: Mapping[str, type[Demo]] = {
-    # demos from the original paper
+    # demos from the original papers
     "sb": SbDemo,
     "iriw": IriwDemo,
     "n6": N6Demo,
@@ -1064,6 +1138,7 @@ DEMOS: Mapping[str, type[Demo]] = {
     "ex8-10": Ex_8_10_Demo,
     "amd5": Amd5Demo,
     "linux-spin": LinuxSpinlockDemo,
+    "linux-spin-ticket": LinuxTicketedSpinlockDemo,
     # other demos
     "peterson": PetersonLockDemo,
     "peterson-fix": PetersonLockFixedDemo,
@@ -1088,6 +1163,11 @@ def test() -> bool:
     return True
 
 
+def demos_list() -> str:
+    """Return human readable string with all demos."""
+    return "(\n    " + ",\n    ".join(DEMOS) + ",\n)"
+
+
 def main() -> None:
     """CLI entrypoint."""
     prog, *args = sys.argv
@@ -1100,10 +1180,10 @@ def main() -> None:
             case _:
                 raise ValueError
     except KeyError:
-        print(f"demo not found, select from ({'|'.join(DEMOS)})")
+        print(f"demo not found, select from {demos_list()}")
         sys.exit(1)
     except ValueError:
-        print(f"usage: {prog} ({'|'.join(DEMOS)})")
+        print(f"usage: {prog} {demos_list()}")
         sys.exit(1)
 
     sys.exit(0 if success else 1)
